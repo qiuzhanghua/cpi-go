@@ -12,6 +12,7 @@ import (
 
 	"github.com/qiuzhanghua/cpi-go/internal/home"
 	"github.com/qiuzhanghua/cpi-go/internal/install"
+	"github.com/qiuzhanghua/cpi-go/internal/pack"
 )
 
 // reorder 把选项挪到位置参数前面。
@@ -50,7 +51,8 @@ func reorder(fs *flag.FlagSet, args []string) []string {
 	return append(flags, rest...)
 }
 
-const version = "0.1.0-dev"
+// version 是变量不是常量，好让发布流程用 -ldflags "-X main.version=..." 覆盖。
+var version = "0.1.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -67,6 +69,8 @@ func main() {
 		err = cmdList(os.Args[2:])
 	case "where":
 		err = cmdWhere(os.Args[2:])
+	case "pack":
+		err = cmdPack(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "version", "--version", "-v":
@@ -156,6 +160,38 @@ func cmdWhere(args []string) error {
 	return install.Where(*dir, fs.Arg(0), os.Stdout)
 }
 
+func cmdPack(args []string) error {
+	fs := flag.NewFlagSet("pack", flag.ExitOnError)
+	out := fs.String("out", "", "输出 zip 路径（默认 dist/<id>-<version>-<os>-<arch>.zip）")
+	goos := fs.String("os", "", "目标平台（默认当前平台）")
+	goarch := fs.String("arch", "", "目标架构（默认当前架构）")
+	self := fs.String("cpi", "", "要嵌进包里的 cpi 可执行文件（默认当前进程）")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "用法: cpi pack <含 manifest.yaml 与 payload/ 的目录> [选项]")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(reorder(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return fmt.Errorf("需要且只需要一个参数：装配目录")
+	}
+	p, err := pack.Build(pack.Options{
+		Dir:    fs.Arg(0),
+		Out:    *out,
+		GOOS:   *goos,
+		GOARCH: *goarch,
+		Self:   *self,
+		Log:    os.Stdout,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("已生成 %s\n", p)
+	return nil
+}
+
 func cmdEnv(args []string) error {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
 	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
@@ -182,6 +218,7 @@ func usage(w *os.File) {
   cpi list
   cpi where <id>
   cpi uninstall <id>
+  cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
   cpi env
   cpi version
 

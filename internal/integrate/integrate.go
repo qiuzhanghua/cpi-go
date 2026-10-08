@@ -99,11 +99,10 @@ func plistString(doc, key string) string {
 func AppLink(goos, homeDir, id, name, entryAbs, launcher string) (link *ledger.Link, note string, err error) {
 	switch goos {
 	case "darwin":
-		dir := filepath.Join(homeDir, "Applications")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		target := MacAppLinkPath(homeDir, name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return nil, "", err
 		}
-		target := filepath.Join(dir, name+".app")
 		if _, err := os.Lstat(target); err == nil {
 			return nil, fmt.Sprintf("提示：%s 已存在，没有覆盖它，启动台里可能看到的是旧的那个。", target), nil
 		}
@@ -113,19 +112,48 @@ func AppLink(goos, homeDir, id, name, entryAbs, launcher string) (link *ledger.L
 		return &ledger.Link{Path: target, Target: entryAbs, Kind: "app-symlink"}, "", nil
 
 	case "linux":
-		dir := filepath.Join(homeDir, ".local", "share", "applications")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		p := DesktopEntryPath(homeDir, id)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return nil, "", err
 		}
-		p := filepath.Join(dir, id+".desktop")
-		body := "[Desktop Entry]\nType=Application\nName=" + name + "\nExec=" + launcher + "\nTerminal=false\n"
-		if err := writeFile(p, body, 0o644); err != nil {
+		if err := writeFile(p, DesktopEntry(name, launcher, ""), 0o644); err != nil {
 			return nil, "", err
 		}
-		return &ledger.Link{Path: p, Kind: "desktop-entry"}, "", nil
+		refreshDesktopDatabase(filepath.Dir(p))
+		return &ledger.Link{Path: p, Target: launcher, Kind: "desktop-entry"}, "", nil
+
+	case "windows":
+		return windowsStartMenuShortcut(name, entryAbs)
 	}
-	// Windows 的开始菜单快捷方式需要 COM，本版不做。
 	return nil, "", nil
+}
+
+// windowsStartMenuShortcut 在开始菜单里放一个 .lnk。
+//
+// 失败一律降级成「提示」而不是报错：快捷方式建不出来，
+// 软件本身照样装好、终端里照样能用，没理由为此把整次安装判失败。
+func windowsStartMenuShortcut(name, entryAbs string) (*ledger.Link, string, error) {
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return nil, "提示：环境里没有 APPDATA，跳过开始菜单快捷方式。", nil
+	}
+	p := WindowsShortcutPath(appData, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return nil, "", err
+	}
+	if _, err := os.Lstat(p); err == nil {
+		return nil, fmt.Sprintf("提示：%s 已存在，没有覆盖它。", p), nil
+	}
+	sc := Shortcut{
+		Target:      entryAbs,
+		WorkingDir:  filepath.Dir(entryAbs),
+		Description: name,
+	}
+	if err := createShortcut(p, sc); err != nil {
+		os.Remove(p) // 别留半个文件让下次「已存在」判定误伤
+		return nil, fmt.Sprintf("提示：没能创建开始菜单快捷方式（%v）；软件已装好，可以直接运行 %s。", err, entryAbs), nil
+	}
+	return &ledger.Link{Path: p, Target: entryAbs, Kind: "start-menu-lnk"}, "", nil
 }
 
 // ShellProfiles 按 $SHELL 与平台算出该写哪几个 shell 配置文件。

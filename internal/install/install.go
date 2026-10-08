@@ -152,14 +152,30 @@ func Install(src string, opt Options) error {
 	}
 
 	var paths []ledger.PathEdit
-	if opt.NoPath || h.GOOS == "windows" {
-		if opt.NoPath {
-			fmt.Fprintln(out, "已按 --no-path 跳过 PATH 集成。")
+	switch {
+	case opt.NoPath:
+		fmt.Fprintln(out, "已按 --no-path 跳过 PATH 集成。")
+	case h.GOOS == "windows":
+		// Windows 的 PATH 在注册表里，不在任何文件里，所以走另一条路。
+		if askPath(out, in, opt.Yes, m.Launch.Cmd, h.Bin(), h.GOOS, nil) {
+			changed, err := integrate.InstallWindowsPath(h.Bin())
+			if err != nil {
+				return fail(err)
+			}
+			if changed {
+				paths = append(paths, ledger.PathEdit{Path: integrate.WindowsPathEditPath})
+				rollback = append(rollback, func() { integrate.RemoveWindowsPath(h.Bin()) })
+				fmt.Fprintf(out, "已写入用户 PATH（注册表 HKCU\\Environment），并广播了环境变更通知。\n")
+			} else {
+				fmt.Fprintf(out, "用户 PATH 里已经有 %s，没有重复添加。\n", h.Bin())
+			}
+		} else {
+			fmt.Fprintf(out, "已跳过 PATH 集成。想让当前这个 cmd 立刻能用，执行：\n  set \"PATH=%s;%%PATH%%\"\n", h.Bin())
 		}
-	} else {
+	default:
 		files := integrate.ShellProfiles(h.GOOS, homeDir)
 		switch {
-		case askPath(out, in, opt.Yes, m.Launch.Cmd, h.Bin(), files):
+		case askPath(out, in, opt.Yes, m.Launch.Cmd, h.Bin(), h.GOOS, files):
 			edits, err := integrate.InstallPathBlock(files, h.Bin(), homeDir)
 			if err != nil {
 				return fail(err)
@@ -318,19 +334,35 @@ func remove(h *home.Home, led *ledger.Ledger, id string, out io.Writer) error {
 		}
 	}
 	if len(p.PathEdits) > 0 {
-		files := make([]string, 0, len(p.PathEdits))
+		// Windows 的 PATH 是一条注册表记录，账本里用伪路径表示；
+		// 其余的才是 shell 配置文件里的标记块。两者不能混在一起处理。
+		var files []string
+		windowsPath := false
 		for _, e := range p.PathEdits {
+			if e.Path == integrate.WindowsPathEditPath {
+				windowsPath = true
+				continue
+			}
 			files = append(files, e.Path)
 		}
-		changed, err := integrate.RemovePathBlock(files)
-		if err != nil {
-			fmt.Fprintf(out, "警告：摘除 PATH 标记块失败：%v\n", err)
+		if windowsPath {
+			if changed, err := integrate.RemoveWindowsPath(h.Bin()); err != nil {
+				fmt.Fprintf(out, "警告：摘除注册表 PATH 失败：%v\n", err)
+			} else if changed {
+				fmt.Fprintln(out, "已从用户 PATH（注册表 HKCU\\Environment）里摘除")
+			}
 		}
-		for _, f := range changed {
-			fmt.Fprintf(out, "已摘除 PATH 标记块 %s\n", f)
+		if len(files) > 0 {
+			changed, err := integrate.RemovePathBlock(files)
+			if err != nil {
+				fmt.Fprintf(out, "警告：摘除 PATH 标记块失败：%v\n", err)
+			}
+			for _, f := range changed {
+				fmt.Fprintf(out, "已摘除 PATH 标记块 %s\n", f)
+			}
 		}
 		for _, e := range p.PathEdits {
-			if !e.Created {
+			if !e.Created || e.Path == integrate.WindowsPathEditPath {
 				continue
 			}
 			if b, err := os.ReadFile(e.Path); err == nil && strings.TrimSpace(string(b)) == "" {
@@ -394,7 +426,9 @@ func installSelf(binDir string) (string, error) {
 }
 
 // askPath 用人话请求一次许可。非交互环境（不是终端）时直接跳过。
-func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir string, files []string) bool {
+//
+// files 只对类 Unix 有意义；Windows 上 PATH 在注册表里，没有文件可列。
+func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir, goos string, files []string) bool {
 	if yes {
 		return true
 	}
@@ -402,13 +436,20 @@ func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir string, files []
 		fmt.Fprintln(out, "当前不是交互终端，跳过 PATH 集成（软件本身照装）。")
 		return false
 	}
-	fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，cpi 需要把\n  %s\n加进 PATH。做法是在下面这些文件末尾追加一小段标记块（随时可用 cpi uninstall 撤销）：\n", cmd, binDir)
-	for _, f := range files {
-		fmt.Fprintf(out, "  %s\n", f)
+	if goos == "windows" {
+		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，cpi 需要把\n  %s\n加进你的用户 PATH（注册表 HKCU\\Environment）。随时可以用 cpi uninstall 撤销。\n", cmd, binDir)
+	} else {
+		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，cpi 需要把\n  %s\n加进 PATH。做法是在下面这些文件末尾追加一小段标记块（随时可用 cpi uninstall 撤销）：\n", cmd, binDir)
+		for _, f := range files {
+			fmt.Fprintf(out, "  %s\n", f)
+		}
 	}
 	fmt.Fprint(out, "是否继续？[y/N] ")
 	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && line == "" {
+	if err != nil && strings.TrimSpace(line) == "" {
+		// 一个字节都没读到：从脚本里跑的、双击运行、或者 stdin 是 /dev/null。
+		// 这时候别假装用户回答了「不」，要把发生了什么、以及怎么才能装全说清楚。
+		fmt.Fprintf(out, "没有读到你的输入，已跳过 PATH 集成。\n想让命令 %q 在终端里能用，重跑一次并明确同意：\n  ./cpi install . --yes\n", cmd)
 		return false
 	}
 	s := strings.ToLower(strings.TrimSpace(line))
