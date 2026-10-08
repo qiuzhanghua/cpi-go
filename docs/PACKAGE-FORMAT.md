@@ -34,6 +34,10 @@ ai-desk-1.0.0-darwin-arm64.zip
 
 * 归档里只放本平台需要的入口形态，`manifest.yaml` 里仍可写全三个平台（见下）。
 * 平台不匹配时 cpi 直接拒绝安装，不会装出一个跑不起来的目录。
+* 这个 zip 由 **`cpi pack`** 产出（`cpi pack <装配目录> [--os OS] [--arch ARCH] [--cpi 可执行文件]`）。
+  装配目录里只需要 `manifest.yaml` + `payload/`，其余三样是 `cpi pack` 现场生成的——
+  所以**打出来的 `SHA256SUMS`、`install.sh`、`install.cmd` 在三个平台上是同一份实现**，
+  不靠每个仓库各写一遍打包脚本（理由见 [`DESIGN.md`](DESIGN.md) §2.15）。
 
 ## 3. manifest.yaml
 
@@ -80,6 +84,8 @@ launch:
   有一条对不上就中止安装。符号链接不参与校验。
 * 缺失 `SHA256SUMS` 时 cpi 打印警告并继续，账本把这次安装标成 `unverified`。
 * `cpi install --skip-verify` 可以显式跳过校验（只用于调试）。
+* 这份文件由 `cpi pack` 生成（按路径排序、每行 `<hash>` + 两个空格 + 路径），
+  发布者不需要自己算——包括 `AI Desk` 的 CI。
 
 ## 5. 安装后的布局
 
@@ -106,15 +112,14 @@ launch:
 
 | 平台 | 副作用 | 卸载时 |
 |---|---|---|
-| 全平台 | `<CPI_HOME>/bin/<cmd>` 启动器 | 删除 |
-| 全平台 | `<CPI_HOME>/bin/cpi` 自拷贝 | 账本为空时删除 |
+| 全平台 | `<CPI_HOME>/bin/<cmd>` 启动器（Windows 上是 `<cmd>.cmd`） | 删除 |
+| 全平台 | `<CPI_HOME>/bin/cpi`（Windows 上是 `cpi.exe`）自拷贝 | 账本为空时删除 |
 | 全平台 | `<CPI_HOME>/lib/<id>_<ver>_<os>_<arch>/` | 整目录删除 |
 | macOS | `~/Applications/<name>.app` 软链（进启动台 / Spotlight） | 删除 |
-| Linux | `~/.local/share/applications/<id>.desktop` | 删除 |
-| Linux | `~/.config/environment.d/cpi.conf`（后续） | 删除 |
+| Linux | `~/.local/share/applications/<id>.desktop`（遵守 `$XDG_DATA_HOME`） | 删除 |
 | POSIX | shell 配置里的 `# >>> cpi >>>` … `# <<< cpi <<<` 标记块 | 摘除标记块 |
-| Windows | `HKCU\Environment` 的 `Path`（后续） | 摘除 |
-| Windows | 开始菜单 `.lnk`（后续） | 删除 |
+| Windows | `HKCU\Environment` 的 `Path` 最前面那一条 | 摘除那一条 |
+| Windows | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\cpi\<name>.lnk` | 删除 |
 
 **PATH 集成是唯一需要用户点头的副作用**：写入 shell 配置前必须用人话问一次，
 用户拒绝时软件照装、图标照建，只是终端里敲不出来（功能降级，不是失败）。
@@ -123,6 +128,17 @@ macOS 上 zsh 不读 `~/.profile`，所以落点按 `$SHELL` 计算：zsh 写
 `~/.zprofile` + `~/.zshrc`，bash 写 `~/.bash_profile`，fish 写
 `~/.config/fish/config.fish`；不论 `$SHELL` 都再写一份 `~/.profile` 兜底。
 标记块本身是幂等守卫，重复写入不会把 PATH 撑大。
+
+Windows 上的两条硬规定：
+
+* **读出什么类型就写回什么类型**（`REG_SZ` / `REG_EXPAND_SZ`）。用
+  `[Environment]::SetEnvironmentVariable(..., "User")` 会把 `REG_EXPAND_SZ`
+  压成 `REG_SZ`，用户原有的 `%USERPROFILE%` 之类从此不再展开——所以必须直接操作
+  注册表原值。写完广播 `WM_SETTINGCHANGE`，否则已经开着的进程不会重读环境。
+* **往返必须逐字节保真**：插入时原值一个字节不动（只在最前面加一条），摘除时按
+  `;` 切分、只丢掉命中的那一条、**空条目原样保留**（Windows 上空条目表示"当前
+  目录"，用户 PATH 的默认值结尾本来就带一个分号）。判重要归一化大小写、正反斜杠
+  与未展开的 `%VAR%`。
 
 ## 7. bootstrap 脚本
 
@@ -158,12 +174,15 @@ cpi list
 cpi where <id>
 cpi uninstall <id> [--dir PATH]
 cpi env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时用）
+cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
 ```
 
 `CPI_HOME` 的解析优先级：`--dir` > 环境变量 `CPI_HOME` > `~/ad`。
 
+`cpi pack` 是**发布者**侧的（给自己 CI 用），不是终端用户用的；它的输出就是本文第 2 节那个 zip。
+
 ## 9. 与设计文档的关系
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
-"为什么这么设计"、三平台现状、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3，已按单应用范围重写）。
+"为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.1：单应用范围 + 三平台已落地 + CI 跑绿）。

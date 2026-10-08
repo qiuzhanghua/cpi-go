@@ -1,4 +1,4 @@
-# cpi — Cross Platform Installer 设计文档（v3）
+# cpi — Cross Platform Installer 设计文档（v3.1）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -6,6 +6,8 @@
 v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**单应用安装器**：一次安装一个产品（当前的具体对象是 Tauri 应用 **AI Desk**），落到 `~/ad`，装完终端能敲、图标能点、能干净卸载。
 
 v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四屏"**全部退出范围**，理由与保留价值记在 §7 附录。
+
+**v3.1 把三平台的后半程补上了**：Windows 的 PATH（直写 `HKCU\Environment`）与开始菜单 `.lnk`（原生 COM）、Linux 的 `.desktop`，都已实现；打包从 shell 脚本搬进 `cpi pack` 子命令；两个仓库都接上 CI，**Linux 与 Windows 的路径由真 Linux / 真 Windows runner 跑测试来验证**。全文里"未实现 / 未在真机验证"的说法已按此更新（§0.3、§2.13、§3）。
 
 ---
 
@@ -48,13 +50,25 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | 图形界面：Wails 四屏 → **暂缓** | 首版是"解压 + 运行脚本"，GUI 不是它的前置条件 |
 | 硬链接：`store` ↔ `lib` 之间 → **当前唯一用法是合成 `.app` 外壳** | store 没了，硬链接只剩一处 |
 
+### 0.3.1 v3 → v3.1 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| Windows PATH：**未实现** → 直写 `HKCU\Environment` 的 `Path` | 见 §2.6。关键是**读出什么类型就写回什么类型**，否则会把用户的 `REG_EXPAND_SZ` 压成 `REG_SZ` |
+| Windows 图形入口：**未实现** → 原生 COM 建开始菜单 `.lnk` | 见 §2.7。刻意**不起 PowerShell 子进程** |
+| Linux 图形入口：已写未验证 → 已在 ubuntu runner 上验证 | 见 §2.13。测试里会调 `desktop-file-validate` |
+| 打包：`tools/fixture/make.sh` 那套 shell → **`cpi pack` 子命令** | 见 §2.15。Windows 的 Git Bash 连 `zip` 都没有，`sha256sum` 也不保证有，而 .app 里的符号链接普通 zip 会展开——这三件事在 Go 里一次写完，三平台一致 |
+| PATH 往返保真：**装一次再卸一次必须逐字节还原** | 见 §2.6。Windows 的 PATH 里空条目是有含义的（表示"当前目录"），顺手 Trim 掉就等于改了用户的语义 |
+| CI：无 → cpi-go 三平台测试 + 六平台交叉编译；ai-desk 三平台打包 | 见 §2.16。本机没有容器与虚拟机，多平台验证只能这么做 |
+
 **作废**：D1–D5（清单来源/落地方式/默认范围/网络/交付物）、D10 的镜像部分、D11（离线模式）、D12、D13 的 GUI 部分、D14 的"默认清单"、D16 的多应用 Profile。**保留**：D7（PATH 集成）、D8（账本/卸载）、D9（不提权）、D15–D18（启动器/应用形态）。逐条对照见 §7。
 
 ### 0.4 待确认假设
 
 | # | 假设 | 影响 |
 |---|---|---|
-| A1 | **Windows 侧的 PATH 集成与开始菜单 `.lnk` 尚未实现**（见 §2.13），首版 Windows 用户需要手工把 `<CPI_HOME>\bin` 加进 PATH | 不解决则"终端能敲"这条在 Windows 上不成立 |
+| A1 | **~~Windows 侧的 PATH 集成与开始菜单 `.lnk` 尚未实现~~** —— v3.1 已实现并在真 Windows runner 上验证（§2.6、§2.7、§2.13） | 已消解 |
+| A5 | **cpi 在 Windows 的 PATH 上只摘除自己加的那一条**，其余（含结尾的空条目）逐字节保持原样 | 这条现在有 `TestWindowsPathRoundTripIsExact` 与真注册表往返测试守着（§2.6） |
 | A2 | 没有 `SHA256SUMS` 时只警告不拒绝 | 供应链可信度换可用性；如需更严，可要求清单里给 `sha256` 并强制比对 |
 | A3 | 一次只装一个应用（`manifest.yaml` 里只有一个 `id`） | 要装第二个产品时，再跑一次另一个 zip 即可，账本天然支持多包 |
 | A4 | 图标暂不处理 | 合成 `.app` 外壳时没有 `Resources/`、`.desktop` 里没有 `Icon=`；上游给了 `.icns`/`.ico` 时才补 |
@@ -103,6 +117,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-12 | 失败时按逆序回滚，不留半成品 |
 | FR-13 | 重装同一个 `id` 时覆盖式替换（先删旧、再装新） |
 | FR-14 | 非交互环境（无 TTY）不提问，直接跳过 PATH 集成并打印手工命令 |
+| FR-15 | 发布者侧：`cpi pack <装配目录>` 就地补齐 `install.sh`/`install.cmd`/`SHA256SUMS` 与 cpi 二进制并打成 zip（§2.15） |
 
 ### 1.4 非功能需求
 
@@ -175,13 +190,16 @@ cmd/cpi/            CLI 入口：参数解析、子命令分发、中文输出
 internal/home/      安装根解析（--dir > $CPI_HOME > ~/ad）与各子目录
 internal/manifest/  manifest.yaml 的解析与平台校验
 internal/stage/     解包（目录或 zip）与 sha256 校验
-internal/integrate/ 外部副作用：终端启动器、图形入口、PATH 标记块
+internal/pack/      反向：把装配目录打成可分发的 zip（install.sh/install.cmd/cpi/SHA256SUMS）
+internal/integrate/ 外部副作用：终端启动器、图形入口、PATH
 internal/ledger/    state.json 的读写
 internal/install/   编排 + 回滚 + 卸载回放
-tools/fixture/      造测试分发包的脚本（不属于产品）
+tools/fixture/      造测试分发包的脚本（不属于产品；产品路径已由 cpi pack 取代）
 ```
 
-依赖方向是单向的：`install` → {`home`, `manifest`, `stage`, `integrate`, `ledger`}，`integrate` → `ledger`，其余互相不依赖。
+`internal/integrate/` 内部按平台拆文件：`integrate.go`（启动器与 PATH 标记块，全平台）、`entry.go`（图形入口路径与 `.desktop` 内容，纯函数）、`pathwin.go`（Windows PATH 的字符串处理，纯函数、可测）、`registry_windows.go` + `registry_stub.go`（注册表读写）、`shortcut_windows.go` + `shortcut_stub.go`（`.lnk`）。**平台无关的部分一律做成纯函数**，这样 Windows 的逻辑也能在 macOS 上被测试覆盖。
+
+依赖方向是单向的：`install` → {`home`, `manifest`, `stage`, `integrate`, `ledger`}，`integrate` → `ledger`，`pack` → {`manifest`, `stage`}，其余互相不依赖。
 
 ### 2.3 磁盘布局
 
@@ -238,7 +256,9 @@ launch:
    └ 同 id 已存在 → 先按卸载流程删旧的（D30）
 5. 生成 bin/<cmd>                                      ← integrate.Launcher
 6. 建立图形入口                                        ← integrate.AppLink
-7. 请求许可后写 PATH 标记块                            ← integrate.InstallPathBlock
+7. 请求许可后把 bin/ 接进 PATH                          ← integrate.InstallPathBlock
+   ├ POSIX   → 写 shell 配置的标记块
+   └ Windows → integrate.InstallWindowsPath（改 HKCU\Environment 后广播）
 8. 把 cpi 复制到 bin/cpi                               ← installSelf
 9. 写 state.json                                       ← ledger.Save
 ```
@@ -275,18 +295,29 @@ export PATH
 - 写入前**先摘掉旧块再追加**，所以重复安装不会累积。
 - 已经在文件里的 cpi 块与"用户自己早就加过的等价条目"都能识别：前者被替换，后者只提示。
 - **写之前必须用人话请求许可**，并逐个列出**实际**要改的文件名（这台机器上是 `~/.zprofile`、`~/.zshrc`、`~/.profile`）。拒绝 → 软件照装、图标照建，只打印一行手工命令，**功能降级而非失败**。
-- 非交互环境（管道、CI）不提问，直接跳过。
+- 非交互环境（管道、CI）不提问，直接跳过。**注意 `isTerminal` 不能只看 `os.ModeCharDevice`**：`/dev/null` 也是字符设备，所以从脚本或双击运行时走的是"提问后立刻 EOF"这条路——那种情况下要明说"没读到你的输入，想让命令能用就重跑一次并加 `--yes`"，不能假装用户回答了"不"。
+
+**Windows 侧的四个具体决定**
+
+- **直写注册表，不用 `[Environment]::SetEnvironmentVariable(..., "User")`**（C3）：那个 API 会把 `REG_EXPAND_SZ` 写成 `REG_SZ`，用户原有的 `%USERPROFILE%` 之类从此不再展开。`syscall` 里没有导出 `RegSetValueEx`，所以用 `syscall.NewLazyDLL("advapi32.dll")` 取原生过程——**依然只用标准库**。
+- **读出什么类型就写回什么类型**：值不存在（错误码 2 = `ERROR_FILE_NOT_FOUND`）当作空串 + `REG_EXPAND_SZ`，不算错误。
+- **写完广播 `WM_SETTINGCHANGE`**（`SendMessageTimeoutW` + `SMTO_ABORTIFHUNG`，5 秒超时）：不广播的话，已经开着的程序（包括资源管理器）不会重新读环境变量。
+- **插入与摘除都必须逐字节保真**：Windows 的 PATH 里**空条目是有含义的**（表示"当前目录"），而用户 PATH 的默认值结尾本来就带一个分号。所以插入时原值一个字节都不动（只在最前面加一条），摘除时按条目切分、只丢掉命中的那一条、空条目原样拼回去。判重则要归一化（大小写、正反斜杠、未展开的 `%VAR%`），否则"已经加过了"会被判成"没加过"，装两次就重复追加。
+
+> 这条保真契约的由来见 §0.3.1：CI 第一次在真 Windows 上跑就抓到了"卸载后用户 PATH 少一个分号"。补的 `TestWindowsPathRoundTripIsExact` 在 macOS 上就能跑——它本来就该在跑到 Windows 之前抓住这个问题。
 
 ### 2.7 图形入口集成
 
 | 平台 | 机制 | 落点 | 状态 |
 |---|---|---|---|
 | macOS | **符号链接**指向 `lib/…/<Name>.app` | `~/Applications/<Name>.app` | 已实测：`open` 能拉起、启动台会索引 |
-| Linux | `.desktop` 文件，`Exec=` 指向启动器 | `~/.local/share/applications/<id>.desktop` | 已写，未在真机验证 |
-| Windows | 开始菜单 `.lnk` | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\…` | **未实现**（需要 COM，见 §2.13） |
+| Linux | `.desktop` 文件，`Exec=` 指向启动器 | `~/.local/share/applications/<id>.desktop`（**遵守 `$XDG_DATA_HOME`**） | 已实测（ubuntu runner；测试里调 `desktop-file-validate`） |
+| Windows | 开始菜单 `.lnk` | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\cpi\<Name>.lnk` | 已实测（windows runner；写入后读回来做往返比对） |
 
 - 目标已存在时**不覆盖**，只打印一条提示（避免把用户自己装的同名应用顶掉）。
 - 每条入口都在账本里登记路径与类型，卸载即回放删除。
+- **Linux 为什么遵守 `$XDG_DATA_HOME`**：不遵守的话会把 `.desktop` 写进一个用户根本没在看的目录，菜单里永远不出现。写完调一次 `update-desktop-database`，但它不一定装了——没有就静默跳过。
+- **Windows 的 `.lnk` 为什么自己写 COM 而不用 PowerShell**：一来不必依赖 `WScript.Shell` 与执行策略（C4），二来"下载来的程序改注册表又拉起 PowerShell"正是杀软/EDR 的敏感行为特征。`.lnk` 建失败时**降级为提示而不是报错**：软件已经装好了，快捷方式建不出来不该判整次安装失败。
 
 **为什么 macOS 上"必须有 `.app`"（本机实测，D24）**
 
@@ -343,15 +374,18 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 ```
 删 ~/Applications/<Name>.app 或 .desktop   ← 账本 links
-删 bin/<cmd>                               ← 账本 launcher
+删开始菜单的 .lnk（Windows）                ← 账本 links
+删 bin/<cmd> 或 bin/<cmd>.cmd              ← 账本 launcher
 删 lib/<id>_<version>_<os>_<arch>/         ← 账本 dir
-摘除 PATH 标记块（逐文件）                  ← 账本 pathEdits
-删我们自己创建出来的空 shell 配置文件       ← 账本 pathEdits[].created
+摘除 PATH 条目                             ← 账本 pathEdits
+  ├ POSIX   → 逐文件摘掉标记块
+  ├ Windows → 从 HKCU\Environment 的 Path 里只摘掉那一条（其余逐字节不动）
+  └ 我们自己创建出来的空 shell 配置文件也一并删掉（账本 pathEdits[].created）
 删 bin/cpi                                 ← 账本 self（仅当账本里已经没有别的包）
 写回 state.json（去掉该包）
 ```
 
-**验收标准（可测）**：`cpi list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 cpi 标记块；如果那个文件是 cpi 创建出来的且已经空了，文件本身也不在。
+**验收标准（可测）**：`cpi list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 cpi 标记块（Windows 上是注册表 PATH 里没有 `<CPI_HOME>\bin`）；如果那个文件是 cpi 创建出来的且已经空了，文件本身也不在。
 
 `<CPI_HOME>` 目录**不删**——用户可能往里放了别的东西，删掉是越界。命令会明说"目录还在"。
 
@@ -388,22 +422,30 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 ### 2.13 三平台现状（诚实交代）
 
+代码层面三条路径都已实现；下面"实测"的意思是**在真的那个操作系统上跑过测试或端到端**，依据是 §2.16 的 CI。
+
 | 能力 | macOS | Linux | Windows |
 |---|---|---|---|
-| 解包 / 校验 / 落盘 | ✅ 已实测 | 代码同路径 | 代码同路径 |
-| 终端启动器 | ✅ activate 与 direct 都实测过 | 已写，未验证 | 已写 `.cmd`，未验证 |
-| 图形入口 | ✅ 实测（`~/Applications` 软链可被 `open` 拉起） | 已写 `.desktop`，未验证 | ❌ **未实现**（需要 COM 建 `.lnk`） |
-| PATH 集成 | ✅ 实测（`.zprofile`/`.zshrc`/`.profile`） | 代码同路径，未验证 | ❌ **未实现**（需写 `HKCU\Environment` + 广播） |
-| 覆盖式重装 / 幂等 / 回滚 / 卸载 | ✅ 已实测 | 同路径 | 同路径 |
+| 解包 / 校验 / 落盘 | ✅ 实测（沙箱 HOME，端到端） | ✅ CI | ✅ CI |
+| 终端启动器 | ✅ activate 与 direct 都实测过 | ✅ CI（包装脚本） | ✅ CI（`.cmd`） |
+| 图形入口 | ✅ 实测（`~/Applications` 软链可被 `open` 拉起） | ✅ CI（`.desktop`，过 `desktop-file-validate`） | ✅ CI（开始菜单 `.lnk`，写入后读回比对） |
+| PATH 集成 | ✅ 实测（`.zprofile`/`.zshrc`/`.profile`，连装三次不叠加） | ✅ CI（同一个纯函数，CI 里真写文件） | ✅ CI（真写 `HKCU\Environment` 并向自己广播） |
+| 覆盖式重装 / 幂等 / 回滚 / 卸载 | ✅ 实测 | ✅ CI | ✅ CI |
 | 上游裸二进制 → 合成 `.app` 外壳 | ❌ **未实现**（配方见 §2.7，需先给 `manifest.Entry` 加 `bin`） | — | — |
 
-**Windows 上已知要处理的三个坑**（写代码前先记在这里）：
+> "✅ CI" ≠ "在真机上手动点过一遍"。它等于：**在那个操作系统的 runner 上，测试真的落盘、真的写注册表、真的建 `.lnk` 并读回来**。这三件事里最容易只在真机上暴露的（路径分隔符、可执行位、PATH 的类型与空条目）都已经由 CI 抓过一次或两次（§0.3.1）。
 
-1. 写 `HKCU\Environment` 的 `Path` **别用** `[Environment]::SetEnvironmentVariable(..., "User")`——它会把 `REG_EXPAND_SZ` 写成 `REG_SZ`，用户原有的 `%USERPROFILE%` 等不再展开；直接操作注册表原值更稳（C3）。
+**Windows 上已经踩过并处理掉的坑**（留档，免得改动时踩回去）：
+
+1. 写 `HKCU\Environment` 的 `Path` **别用** `[Environment]::SetEnvironmentVariable(..., "User")`——它会把 `REG_EXPAND_SZ` 写成 `REG_SZ`，用户原有的 `%USERPROFILE%` 等不再展开；直接操作注册表原值才稳（C3、§2.6）。
 2. 脚本优先 `.cmd`/`.bat`，不要依赖 PowerShell 的执行策略（C4）。
-3. 下载物带 MOTW，SmartScreen 会报"未知发布者"；而"下载来的脚本改 PATH + 写注册表"正是杀软/EDR 的敏感行为特征。
+3. **PATH 的往返必须逐字节保真**，空条目要原样留着（§2.6）——CI 第一轮就抓到了"卸载后少了结尾那个分号"。
+4. **`filepath.Separator` 与 `os.UserHomeDir()` 的分隔符不一致**：Windows 上前者给 `\`、后者给 `/`，拿 `homeDir + string(filepath.Separator)` 当前缀去比一定比不中。凡是"把绝对路径相对化成 `$HOME/…`"的地方，两边都要先 `filepath.ToSlash`。
+5. 下载物带 MOTW，SmartScreen 会报"未知发布者"；而"下载来的脚本改 PATH + 写注册表"正是杀软/EDR 的敏感行为特征。**这不是能靠代码解决的，是签名问题**（§5 R1）。
 
 ### 2.14 CLI
+
+**安装侧：**
 
 ```
 cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify]
@@ -414,18 +456,77 @@ cpi env [--dir PATH]        # 打印把 bin/ 加进 PATH 的 shell 片段
 cpi version | cpi help
 ```
 
+**打包侧（发布者用，见 §2.15）：**
+
+```
+cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
+```
+
 - 退出码：`0` 成功；`1` 运行时错误；`2` 用法错误。
 - 选项与位置参数**顺序无关**：`cpi install . --dir ~/ad` 与 `cpi install --dir ~/ad .` 等价（标准库 `flag` 遇到第一个位置参数就停止解析，所以入口处把选项重排了一次）。
 - 输出针对"看得懂中文但不一定懂 shell 的人"写：出错时给的是**哪个文件、哪个字段、怎么改**。
+- `cpi version` 的版本号是编译期注入的（`-ldflags "-X main.version=…"`），所以 `var version` 而不是 `const version`——`const` 注入不进去。
 
-### 2.15 cpi 自身的打包与分发
+### 2.15 打包：`cpi pack`
 
-| 平台 | 现状 |
+**打包这一步在 cpi 里，不在 shell 脚本里。** 装配目录长这样：
+
+```
+<装配目录>/
+├── manifest.yaml
+└── payload/…
+```
+
+`cpi pack <装配目录>` 会就地补齐另外三样（`install.sh`、`install.cmd`、`SHA256SUMS`），挑一个 cpi 二进制塞进去，然后产出 `<id>-<version>-<os>-<arch>.zip`。
+
+**为什么从 `tools/fixture/make.sh` 那套 shell 搬进 Go**：
+
+| 问题 | shell 方案 | `cpi pack` |
+|---|---|---|
+| Windows 上的 Git Bash 常常**没有 `zip`** | 挂 | 标准库 `archive/zip` |
+| `sha256sum` 不保证存在（macOS 只有 `shasum`） | 要写分支 | 一处实现 |
+| **`.app` 里有符号链接，普通 zip 会把链接展开成实体** | 靠 `zip -y`，容易忘 | `WalkDir` 不跟链接走，按链接原样写 |
+| **Unix 权限位**（`install.sh` 要 `0755`） | 靠 `zip` 的默认行为 | `FileHeader.SetMode` —— 只有它会把权限位写进 ExternalAttrs |
+| `SHA256SUMS` 的格式（两个空格、按路径排序、符号链接不参与） | 每个仓库各写一遍 | 与 `stage.VerifySums` 同一个约定 |
+
+几条硬规定：
+
+- **先算 `SHA256SUMS`，再建 zip**：清单必须在写进 zip 之前就是确定的字节串。
+- **任一步失败就删掉半个 zip**：留一个坏压缩包比什么都不留更糟（人会以为打包成功了）。
+- **`payload/` 下每个常规文件都必须在清单里**，符号链接不参与——与安装侧的校验规则逐字一致。
+- **Windows 目标时 cpi 改名成 `cpi.exe`**：`install.cmd` 里写的就是 `cpi.exe`。
+- 打包用的 manifest 必须**有目标平台的 `entry`**，否则直接报错（"这个包不适用于本机"要在打包时就发现，而不是发出去之后）。
+
+`tools/fixture/make.sh` 还在（造测试用的小包），但**发布路径已经不再经过它**。
+
+cpi 自己的二进制与签名：
+
+| 项 | 现状 |
 |---|---|
-| 三个平台 | `GOOS=… GOARCH=… go build -o cpi ./cmd/cpi`（Windows 为 `cpi.exe`），直接放进 zip 根目录 |
+| 三平台二进制 | `GOOS=… GOARCH=… go build -trimpath -ldflags "-s -w -X main.version=…" ./cmd/cpi`，交叉编译不需要 cgo（`CGO_ENABLED=0`） |
+| 发版 | 推 `v*` tag → `.github/workflows/release.yml` 出六个平台的 `cpi-<版本>-<os>-<arch>[.exe]` → `gh release create` |
+| 命名 | `cpi-<版本>-<os>-<arch>` 是**给 AI Desk 的 CI 看的契约**（它按这个名字挑对应平台的 cpi 塞进 zip） |
 | 签名 | **未做**，是发布阻塞项（§5 R1） |
 
-`tools/fixture/make.sh` 是造这个 zip 的参考实现：它把一份 `manifest.yaml`、一份 `payload/`、算好的 `SHA256SUMS`、`install.sh`/`install.cmd` 与 cpi 二进制拼成一个 `<id>-<version>-<os>-<arch>.zip`。**AI Desk 侧的 CI 应当照着它写**（Step 3）。
+### 2.16 持续集成
+
+本机没有容器，也没有别的操作系统的虚拟机，所以**多平台验证只能交给 CI**：把平台专属的行为做成"在真 Linux / 真 Windows 上跑起来才成立"的测试，而不是靠读代码相信它。
+
+**cpi-go（`.github/workflows/ci.yml`）**，每次 push / PR：
+
+| job | 内容 |
+|---|---|
+| `test` × {ubuntu, macos, windows} | `go vet ./...` + `go test ./...`；ubuntu 上先装 `desktop-file-utils`（给 `desktop-file-validate` 用）；**windows 上额外真写一次 `HKCU\Environment`**（`CPI_TEST_REGISTRY=1` 才不 skip） |
+| `crosscompile` × {darwin, linux, windows} × {amd64, arm64} | `CGO_ENABLED=0 go build ./...`，确认六个组合都编得出来 |
+
+发版：`.github/workflows/release.yml`，`v*` tag 触发。
+
+**ai-desk（`.github/workflows/release.yml`，一个文件同时兼 CI 与发版）**，每次 push：
+
+- **三个平台各自真打一遍包**：macOS(arm64) / Linux(amd64) / Windows(amd64)。
+- cpi **不是下载来的，是就地编译的**：workflow 里 `actions/checkout` 把 cpi-go 检出到 `.cpi-go`，`go build` 出当前平台的 cpi，再交给 `tools/package.sh`。好处是**两个仓库的改动能一起被验证**，也不必先有 cpi 的 release 这里才跑得起来（`workflow_dispatch` 有个 `cpi_ref` 输入，默认 `main`）。
+- 版本号只有一个来源：`src-tauri/tauri.conf.json`。CI 用 `node -p` 读它，传给打包脚本，避免"tag 上的版本和产物里的版本不一样"。
+- **前端依赖必须锁死**：`npm ci` + `package-lock.json`。第一次 CI 就是在这里翻的车——`package.json` 里写 `"^2"` 又没锁文件，CI 每次解析到最新的 `@tauri-apps/*`，与 `Cargo.lock` 里的 Rust crate 对不上，`tauri build` 直接拒绝构建（§5 R9）。
 
 ---
 
@@ -437,13 +538,20 @@ cpi version | cpi help
 |---|---|---|
 | manifest 校验 | 表驱动：`entry` 缺失、`bundle` 与 `exe` 并存、路径含 `..`、`launch.cmd` 含分隔符、当前平台无入口 | `internal/manifest` |
 | 解包路径安全 | 构造含 `../` 与绝对路径的 zip，断言被拒 | `internal/stage` |
-| 校验 | 改动一个字节 → 拒绝；删掉 `SHA256SUMS` → 警告 + `unverified`；`--skip-verify` → 放行 | `internal/stage` |
+| 校验 | 改动一个字节 → 拒绝；删掉 `SHA256SUMS` → 警告 + `unverified`；`--skip-verify` → 放行；**带空格的路径**（`AI Desk.app/…`）要能正确切出文件名 | `internal/stage` |
+| 打包 | 打出来的 zip 能原样解回来（含符号链接与 `0755`）；`SHA256SUMS` 覆盖到每个常规文件且不含链接；缺目标平台入口时拒绝；失败不留半个 zip | `internal/pack` |
+| 启动器语义 | 断言 `activate` 生成 `open … --args` 而 `direct` 直接 exec；参数逐个透传；生成的文件真的可执行 | `internal/integrate` |
+| PATH 块 | **把生成的块真喂给 `zsh -n` / `bash -n` / `sh -n`**；"必须是 `$HOME` 相对形式"；连 source 三次只有一个块且在首位；fish 用 `contains` | `internal/integrate` |
+| Windows PATH | 纯函数表驱动（展开 `%VAR%`、判重、只摘自己那一条）+ **往返逐字节保真**；真注册表往返由 CI 的 windows job 跑 | `internal/integrate` |
+| Windows `.lnk` | 写进去再读回来，比对 Target/Arguments/WorkingDir/Description；已有同名不覆盖 | `internal/integrate`（windows） |
+| Linux `.desktop` | 字段齐全、`Exec=` 指向启动器、遵守 `$XDG_DATA_HOME`；有 `desktop-file-validate` 就过一遍 | `internal/integrate`（linux） |
 | 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失 | e2e |
-| 启动器语义 | 断言 `activate` 生成 `open … --args` 而 `direct` 直接 exec；参数逐个透传（假应用把 argv 写文件） | e2e |
-| 跨平台 | CI 矩阵 `{darwin,linux,windows} × {amd64,arm64}` 至少 `go build` + 单测 | — |
+| 跨平台 | CI 矩阵 `{ubuntu,macos,windows}` 真跑单测；`{darwin,linux,windows} × {amd64,arm64}` 交叉编译 | §2.16 |
 | 静态检查 | `go vet` | 全仓 |
 
-**M0 已经实测通过的（macOS 27.0.1 / arm64，沙箱 HOME）**：
+**一条已经兑现的教训**：字符串级断言抓不住"生成的 shell 代码本身是坏的"。PATH 标记块曾经漏掉一个引号（`*":$HOME/ad/bin:*)`），单测全绿，而真 zsh 一读 `~/.zprofile` 就 `unmatched "`——软件装好了、图标也在，终端里却永远 `command not found`。所以那组测试改成**把生成的代码交给真 shell 去解析**。同类：Windows PATH 的往返保真如果只在字符串层面测，也会漏掉"空条目被吃掉"。
+
+**macOS 上已经端到端实测过的（27.0.1 / arm64，沙箱 `HOME`）**：
 
 - `install.sh` → `cpi install . --dir …` 全流程成功，`~/ad` 布局与设计一致。
 - 终端启动器 `~/ad/bin/ad` 真的把应用拉起来了（探针自报 `argv0` 在 `~/ad/lib/…/Minimal.app/Contents/MacOS/Minimal`、`bundlePath` 正确、`bundleIdentifier` 非 `(null)`、`activationPolicy = 0`）。
@@ -452,7 +560,16 @@ cpi version | cpi help
 - 负例：payload 改一个字节 → `sha256 对不上（清单 …，实际 …）` 拒绝；manifest 指向不存在的入口 → 拒绝。两次失败**都不留半成品**。
 - 卸载后 0 残留，连 cpi 自己创建出来的空 shell 配置文件都删掉了。
 
-**尚未验证**：Linux 与 Windows 的全部路径；`direct` 模式在真实长驻应用上的行为；中断（kill -9）注入；`.app` 外壳合成（代码未实现）。
+**CI 已经抓出来的四个问题**（都不是靠读代码能发现的）：
+
+| # | 现象 | 根因 |
+|---|---|---|
+| 1 | Windows 上生成的 PATH 块是绝对路径，没相对化成 `$HOME/…` | `homeRelative` 拿 `filepath.Separator`（`\`）去比 `os.UserHomeDir()`（`/`）→ 前缀永远不匹配（§2.13 第 4 条） |
+| 2 | Windows 上报"可执行位丢了：`-rw-rw-rw-`" | Windows 的 `os.Stat` 一律报 `0666`，是**测试**的断言没分平台 |
+| 3 | 卸载后用户的 PATH 少了结尾一个分号 | `windowsPathValue` 插值前 `Trim`、`windowsPathRemove` 又只 join 非空条目 → 空条目被吃掉（§2.6） |
+| 4 | ai-desk 三平台构建全挂：`Found version mismatched Tauri packages` | `package.json` 写 `"^2"` 且仓库无 lockfile，CI 解析到的 `@tauri-apps/*` 比 `Cargo.lock` 里的 crate 新（§2.16、R9） |
+
+**尚未验证**：`direct` 模式在真实长驻应用上的行为；中断（kill -9）注入；`.app` 外壳合成（代码未实现）；Linux/Windows 上的**人工**体验（CI 覆盖的是测试断言，不是"人对不对得上眼"）。
 
 ---
 
@@ -461,10 +578,12 @@ cpi version | cpi help
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M0 macOS 一条龙** | 解包/校验/落盘/启动器/图形入口/PATH/账本/卸载/回滚；`tools/fixture` 造包 | ✅ **已完成并实测**（提交 `c4fe024`） |
-| **M1 Linux** | `.desktop` + 包装脚本在真机验证；AppImage 作为 `entry.linux.exe` 的收录路径 | 待做 |
-| **M2 Windows** | `HKCU\Environment` 写 PATH + 广播 `WM_SETTINGCHANGE`；开始菜单 `.lnk`（COM）；`install.cmd` 在真机跑通 | 待做 |
-| **M3 AI Desk 侧打包自动化** | 在 Tauri 工程里照 `tools/fixture/make.sh` 写打包步骤：`tauri build` → 组装 `manifest.yaml` + `payload/` → `SHA256SUMS` → `ditto` 出 zip | 待做 |
-| **M4 发布** | 签名与公证（macOS Developer ID；Windows 代码签名）；分发到 gitea release / 内网 | 阻塞项见 §5 R1 |
+| **M1 Linux** | 包装脚本 + `.desktop`（遵守 `$XDG_DATA_HOME`）；AppImage 作为 `entry.linux.exe` 的收录路径 | ✅ **已完成**，在 ubuntu runner 上验证 |
+| **M2 Windows** | `HKCU\Environment` 写 PATH + 广播 `WM_SETTINGCHANGE`；开始菜单 `.lnk`（原生 COM）；`install.cmd` 在真机跑通 | ✅ **已完成**，在 windows runner 上验证 |
+| **M3 打包收进内核** | `cpi pack`：`SHA256SUMS` + 权限位 + 符号链接 + 三平台一致 | ✅ **已完成**（提交 `acb0c4a`） |
+| **M4 两个仓库的 CI** | cpi-go：三平台单测 + 六平台交叉编译 + tag 发版；ai-desk：三平台真打包 | ✅ **已完成并跑绿**（`242c54e`、`9e33ad7`） |
+| **M5 签名与公证** | macOS Developer ID + 公证 + `xcrun stapler`；Windows 代码签名 | ⏸ **用户明确暂缓**（放弃 1，先做 2 和 3）；仍是真正的发布阻塞项（§5 R1） |
+| **M6 未做的两件** | 合成 `.app` 外壳（需先给 `manifest.Entry` 加 `bin`）；启动器名字冲突检查（R4） | 待做 |
 
 ---
 
@@ -476,24 +595,26 @@ cpi version | cpi help
 |---|---|---|---|
 | **R1** | **macOS 签名与公证**（Developer ID）、**Windows 代码签名**是发布阻塞项 | zip 过浏览器/邮件会带 `com.apple.quarantine` 与 MOTW，用户双击 `install.sh` 或应用时被 Gatekeeper / SmartScreen 拦。签名在 Mach-O 内部，过 zip 不会丢；彻底解决只能签名 + 公证 + `xcrun stapler staple`（票据订在包上，断网也能验） | 发布前必须解决；内网过渡阶段可在文档里教用户处理，但**不要把 `xattr -dr com.apple.quarantine` 写进 `install.sh`**——那是替用户绕过安全检查 |
 | **R2** | **合成外壳没有独立签名**（D24） | 上游只发裸二进制、由 cpi 合成 `.app` 时，外壳本身不是签名包；若下载物带 quarantine，Gatekeeper 可能直接拦 | 与 R1 同源；优先收录上游自己发 `.app` 的软件 |
-| **R3** | Windows 侧 PATH 与开始菜单尚未实现（§2.13） | 首版 Windows 用户"终端能敲"这条不成立 | M2 补齐；补之前不要在文档里承诺 Windows 的终端体验 |
-| **R4** | 启动器**没有做名字冲突检查**：`integrate.Launcher` 会直接覆盖 `bin/<cmd>` | 若用户已在 `~/ad/bin` 放了同名文件会被静默覆盖 | 应当比照 `AppLink` 的做法：存在且不归 cpi 所有则跳过并告知（当前是**已知缺口**） |
+| **R3** | ~~Windows 侧 PATH 与开始菜单尚未实现~~ | — | **已解决**（§2.13）；CI 的 windows job 每次都会重跑真注册表往返，防止改回去 |
+| **R4** | 启动器**没有做名字冲突检查**：`integrate.Launcher` 会直接覆盖 `bin/<cmd>` | 若用户已在 `<CPI_HOME>/bin` 放了同名文件会被静默覆盖 | 应当比照 `AppLink` 的做法：存在且不归 cpi 所有则跳过并告知（当前是**已知缺口**，M6） |
 | **R5** | 上游应用改名 / 改目录结构 | `manifest.yaml` 与 `payload/` 对不上，安装失败 | 打包脚本在 CI 里跑，写完就验，不靠人手维护 |
 | **R6** | 修改 shell 配置被视为越界 | 用户反感或系统管理员禁止 | 明确请求许可、标记块、可一键撤销、拒绝后功能降级而非失败 |
 | **R7** | 用户已有同名应用（自己装过官方版） | `~/Applications` 里两个同名 | 已处理：目标已存在则不覆盖，只提示 |
-| **R8** | **`.app` 外壳合成没有实现**（D24 的后半条） | 上游只发裸可执行文件的 macOS 应用，现在只能写 `entry.darwin.bundle`，写不出来就装不了；硬把它当 `exe` 收进来，用户拿到的是一个没有应用身份的东西 | 先给 `manifest.Entry` 加 `bin`，再照 §2.7 的配方实现（`Info.plist` 4 键 + **硬链接** `Contents/MacOS/<exe>`）。在实现之前，清单里**不要写没有 `.app` 的 macOS 应用** |
+| **R8** | **`.app` 外壳合成没有实现**（D24 的后半条） | 上游只发裸可执行文件的 macOS 应用，现在只能写 `entry.darwin.bundle`，写不出来就装不了；硬把它当 `exe` 收进来，用户拿到的是一个没有应用身份的东西 | 先给 `manifest.Entry` 加 `bin`，再照 §2.7 的配方实现（`Info.plist` 4 键 + **硬链接** `Contents/MacOS/<exe>`）。在实现之前，清单里**不要写没有 `.app` 的 macOS 应用**（M6） |
+| **R9** | **Tauri 前端依赖与 Rust crate 版本漂移** | 这个坑真实发生过：`package.json` 写 `"^2"` + 无 lockfile，CI 解析到比 `Cargo.lock` 更新的 `@tauri-apps/*`，`tauri build` 报 `Found version mismatched Tauri packages` 直接拒绝构建——**本机编得动只是因为 `node_modules` 里还是旧版本** | 已处理：三个 Tauri 包钉死确切版本 + 提交 `package-lock.json` + CI 用 `npm ci`。泛化教训：**凡是"本机能编、CI 编不了"的构建问题，先怀疑锁文件** |
 
 ### 开放问题
 
 | # | 问题 | 需要谁定 |
 |---|---|---|
-| O1 | Windows 的 PATH 与 `.lnk` 什么时候做（M2 之前 Windows 只能算半成品） | 用户 |
+| ~~O1~~ | ~~Windows 的 PATH 与 `.lnk` 什么时候做~~ | **已做**（§2.13） |
 | O2 | 要不要给应用图标（`.icns` / `.ico`），从哪来 | 用户 |
 | O3 | 启动器名字与已有命令冲突时，是跳过、报错、还是让用户改名 | 用户（当前行为见 R4，**尚未实现任何检查**） |
 | O4 | 图形安装器（原 Wails 四屏）还做不做 | 用户 |
 | O5 | 是否需要"装完自动打开终端 / 自动启动一次应用"的引导 | 设计 |
 | O6 | 中断注入测试（kill -9）什么时候补 | 设计 |
 | O7 | cpi 自身如何升级（现在只会被新 zip 里的副本覆盖） | 用户 |
+| O8 | 要不要做合成 `.app` 外壳（R8）——当前 AI Desk 有真 `.app`，所以不挡路 | 用户 |
 
 ---
 
@@ -503,7 +624,9 @@ cpi version | cpi help
 |---|---|
 | cpi | 本产品：Cross Platform Installer |
 | `CPI_HOME` | 安装根，默认 `~/ad`；`--dir` > `$CPI_HOME` > `~/ad` |
-| 分发包 | 那个 zip：`install.sh`/`install.cmd` + `cpi` + `manifest.yaml` + `payload/` + `SHA256SUMS` |
+| 分发包 | 那个 zip：`install.sh`/`install.cmd` + `cpi` + `manifest.yaml` + `payload/` + `SHA256SUMS`；由 `cpi pack` 产出（§2.15） |
+| 装配目录 | 打包的输入：只有 `manifest.yaml` + `payload/`，其余三样由 `cpi pack` 补齐 |
+| `cpi pack` | cpi 的打包子命令（§2.15）；发布路径上唯一被支持的打包方式 |
 | manifest | `manifest.yaml`，描述一个应用怎么落地（`entry` + `launch`） |
 | payload | 应用的实际内容，原样落到 `lib/<id>_<ver>_<os>_<arch>/` |
 | entry | 可执行入口：`bundle:`（macOS `.app`）或 `exe:`（其它平台） |
