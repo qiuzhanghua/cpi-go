@@ -58,8 +58,9 @@ func TestWindowsPathValueIsIdempotent(t *testing.T) {
 		wantChgd bool
 	}{
 		{"空的就加上", ``, bin, true},
-		{"只有分隔符也当空的", `;;  ;`, bin, true},
+		{"原值只有分隔符也原样留着", `;;  ;`, bin + `;;;  ;`, true},
 		{"加在已有的前面", `C:\Windows`, bin + `;C:\Windows`, true},
+		{"结尾的分号不许吃掉", `C:\Windows;`, bin + `;C:\Windows;`, true},
 
 		// 下面这些全是「已经加过了」的不同写法。少认一种，用户装第二次
 		// 就会看到 PATH 里多出一条一模一样的路径。
@@ -101,7 +102,8 @@ func TestWindowsPathRemoveOnlyTouchesOurEntry(t *testing.T) {
 		{"未展开的变量也认得出", `C:\Windows;%USERPROFILE%\ad\bin`, `C:\Windows`, true},
 		{"没有就不动", `C:\Windows;C:\Other`, `C:\Windows;C:\Other`, false},
 		{"摘完是空的就返回空串", bin, ``, true},
-		{"不留下连续分号", bin + `;;C:\Windows`, `C:\Windows`, true},
+		{"空条目照原样留着", bin + `;;C:\Windows`, `;C:\Windows`, true},
+		{"结尾的分号照原样留着", bin + `;C:\Windows;`, `C:\Windows;`, true},
 		{"相似但不相同的路径不许误伤", `C:\Windows;C:\Users\q\ad\bin2`, `C:\Windows;C:\Users\q\ad\bin2`, false},
 	}
 	for _, c := range cases {
@@ -112,6 +114,44 @@ func TestWindowsPathRemoveOnlyTouchesOurEntry(t *testing.T) {
 			}
 			if got != c.wantVal {
 				t.Errorf("值 = %q，想要 %q", got, c.wantVal)
+			}
+		})
+	}
+}
+
+// TestWindowsPathRoundTripIsExact 守住一条底线：装一次再卸一次，
+// 用户原来的 PATH 必须一个字节都不差。
+//
+// 这条测试的由来是 CI 上真跑出来的一次失败：Windows 用户 PATH 的默认值
+// 结尾本来就有一个分号（`…WindowsApps;`），而空条目在 Windows 上是有含义的
+// （表示「当前目录」）。当初插入时顺手 Trim 掉了它，卸载就再也还原不回去。
+// 这条测试在 macOS 上就能跑，正是它该提前抓住这个 Windows 上的问题。
+func TestWindowsPathRoundTripIsExact(t *testing.T) {
+	env := fakeEnv(map[string]string{"USERPROFILE": `C:\Users\q`})
+	bin := `C:\Users\q\ad\bin`
+
+	values := []string{
+		``,
+		`C:\Windows`,
+		`C:\Windows;C:\Other`,
+		`%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;`,
+		`;C:\Windows`,
+		`C:\Windows;;C:\Other`,
+		`"C:\Program Files\Git\cmd";C:\Windows`,
+		`;`,
+	}
+	for _, old := range values {
+		t.Run(old, func(t *testing.T) {
+			added, changed := windowsPathValue(old, bin, env)
+			if !changed {
+				t.Fatalf("原来没有却说没改动：%q", old)
+			}
+			back, changed := windowsPathRemove(added, bin, env)
+			if !changed {
+				t.Fatalf("摘我们刚加的那条却说没改动：%q", added)
+			}
+			if back != old {
+				t.Errorf("来回一趟变了样：\n  原值 %q\n  回来 %q", old, back)
 			}
 		})
 	}

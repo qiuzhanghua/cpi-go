@@ -71,10 +71,12 @@ func windowsPathValue(old, binDir string, lookup func(string) string) (string, b
 			return old, false
 		}
 	}
-	old = strings.Trim(old, "; \t")
 	if old == "" {
 		return binDir, true
 	}
+	// 原来的值一个字节都不动。Windows 的 PATH 里空条目是有含义的
+	// （表示「当前目录」），顺手把结尾的分号或空条目规范化掉，
+	// 就等于悄悄改了用户的语义 —— 而且卸载时再也还原不回去。
 	return binDir + ";" + old, true
 }
 
@@ -91,14 +93,11 @@ func windowsPathRemove(old, binDir string, lookup func(string) string) (string, 
 	kept := make([]string, 0, 8)
 	changed := false
 	for _, e := range strings.Split(old, ";") {
-		e = strings.TrimSpace(e)
-		if e == "" {
-			continue
-		}
-		if windowsPathNorm(e, lookup) == want {
+		if strings.TrimSpace(e) != "" && windowsPathNorm(e, lookup) == want {
 			changed = true
 			continue
 		}
+		// 空条目照原样留着：它是一个有含义的位置，不是噪音。
 		kept = append(kept, e)
 	}
 	if !changed {
