@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Linux 上的 entry_linux_test.go 会顺手跑一次 desktop-file-validate。
+      - name: 装 desktop-file-utils（Linux）
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      # 这条会真的改一次 HKCU\Environment 的 Path 再放回原样，所以只在
+      # 一次性的 runner 上开 —— 开发机上跑测试不该动到自己机器的 PATH。
+      - name: go test（真写一次注册表）
+        if: runner.os == 'Windows'
+        env:
+          CPI_TEST_REGISTRY: '1'
+        run: go test ./internal/integrate/ -run TestUserPathRoundTrip -v
+
+  crosscompile:
+    name: 交叉编译 ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build ./...
+
+      # 六个平台的二进制必须真的编得出来，否则 ai-desk 那边下载不到东西。
+      - name: 编一个真的二进制
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o /dev/null ./cmd/cpi

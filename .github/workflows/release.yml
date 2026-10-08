@@ -1,0 +1,92 @@
+name: Release
+
+# 打 tag 就发版；也可以在 Actions 页面手动指定 tag。
+# 产物命名是 ai-desk 那边的构建契约：
+#   cpi-<版本>-<os>-<arch>[.exe]      例如 cpi-0.1.0-darwin-arm64
+# 改了这里必须同时改 ai-desk 的 .github/workflows/release.yml。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布的 tag（例如 v0.1.0）
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 编译 ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 算出版本号
+        id: ver
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 编译
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          suffix=""
+          [ "$GOOS" = windows ] && suffix=".exe"
+          out="cpi-${VERSION}-${GOOS}-${GOARCH}${suffix}"
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/$out" ./cmd/cpi
+          ls -l "dist/$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpi-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: 发 Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 建 Release 并传产物
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ls -l dist
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes
