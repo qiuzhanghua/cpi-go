@@ -146,15 +146,22 @@ func VerifySums(dir, coverDir string) (bool, error) {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		// 一行形如 "<sha256><空白><路径>"。路径里**可以含空格**（macOS 的
+		// "AI Desk.app" 就是），所以只能按第一段空白切开，绝不能按所有空白切：
+		// 那样会把 "payload/AI Desk.app/…" 取成 "Desk.app/…"。
+		i := strings.IndexAny(line, " \t")
+		if i < 0 {
 			return false, fmt.Errorf("%s 格式不对: %q", SumsFile, line)
 		}
-		sum := strings.ToLower(fields[0])
+		sum := strings.ToLower(line[:i])
 		if len(sum) != 64 {
 			return false, fmt.Errorf("%s 里的 sha256 长度不对: %q", SumsFile, line)
 		}
-		p := strings.TrimPrefix(fields[len(fields)-1], "*")
+		p := strings.TrimSpace(line[i:])
+		p = strings.TrimPrefix(p, "*") // sha256sum -b 会在路径前加一个 *
+		if p == "" {
+			return false, fmt.Errorf("%s 格式不对: %q", SumsFile, line)
+		}
 		want[filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))] = sum
 	}
 	if len(want) == 0 {
