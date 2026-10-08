@@ -264,7 +264,7 @@ launch:
 ```sh
 # >>> cpi >>>
 case ":$PATH:" in
-  *":$HOME/ad/bin:*) ;;
+  *":$HOME/ad/bin:"*) ;;
   *) PATH="$HOME/ad/bin:$PATH" ;;
 esac
 export PATH

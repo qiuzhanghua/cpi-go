@@ -181,7 +181,7 @@ func PathBlock(file, binDir, homeDir string) string {
 		body = "contains " + p + " $PATH; or set -gx PATH " + p + " $PATH\n"
 	} else {
 		body = "case \":$PATH:\" in\n" +
-			"  *\":" + p + ":*) ;;\n" +
+			"  *\":" + p + ":\"*) ;;\n" +
 			"  *) PATH=\"" + p + ":$PATH\" ;;\n" +
 			"esac\nexport PATH\n"
 	}
