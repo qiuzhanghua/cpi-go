@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -135,7 +136,8 @@ func TestBuildRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
+		// Windows 没有可执行位这回事，os.Stat 一律报 0666。
 		t.Errorf("可执行位丢了：%v", fi.Mode())
 	}
 

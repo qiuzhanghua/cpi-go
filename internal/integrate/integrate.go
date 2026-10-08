@@ -286,14 +286,21 @@ func stripBlock(s string) string {
 }
 
 func homeRelative(p, homeDir string) string {
+	p = filepath.ToSlash(p)
 	if homeDir == "" {
-		return filepath.ToSlash(p)
+		return p
 	}
-	prefix := homeDir + string(filepath.Separator)
-	if strings.HasPrefix(p, prefix) {
-		return "$HOME/" + filepath.ToSlash(strings.TrimPrefix(p, prefix))
+	// 两边都先归一成斜杠再比前缀：不这样做的话，只要 homeDir 与 p 的分隔符
+	// 写法不一致（Windows 上很容易），前缀就匹配不上，绝对路径会直接写进
+	// 用户的 shell 配置里。
+	home := strings.TrimRight(filepath.ToSlash(homeDir), "/")
+	if home == "" {
+		return p
 	}
-	return filepath.ToSlash(p)
+	if strings.HasPrefix(p, home+"/") {
+		return "$HOME/" + strings.TrimPrefix(p, home+"/")
+	}
+	return p
 }
 
 // shq 把字符串安全地放进 sh 的单引号里。
