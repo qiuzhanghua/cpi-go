@@ -183,6 +183,10 @@ func TestLauncherQuotesAwkwardPaths(t *testing.T) {
 // 有工具链要注入时，macOS 的 bundle 也必须直接 exec 内层二进制：
 // `open` 不把环境交给应用（实测，见 D33 / C1）。
 func TestLauncherDarwinBundleWithToolchainSkipsOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// filepath.Join 在 Windows 上会给 POSIX 脚本塞反斜杠；真机也不会在那里给 darwin 造启动器。
+		t.Skip("这条验的是 POSIX 启动器，只在 darwin/linux 上跑")
+	}
 	app := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(app, "Contents", "MacOS"), 0o755); err != nil {
 		t.Fatal(err)

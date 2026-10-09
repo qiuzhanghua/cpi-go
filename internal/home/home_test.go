@@ -186,6 +186,10 @@ func TestResolveInstallPriority(t *testing.T) {
 func TestPlatformDataDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	stubUserHome(t, fakeHome)
+	if runtime.GOOS == "windows" {
+		// 不然 PlatformDataDir 会拿到真 %LOCALAPPDATA%，跟上面那个假 HOME 对不上。
+		t.Setenv("LOCALAPPDATA", "")
+	}
 
 	base, ok := PlatformDataDir()
 	if !ok {

@@ -35,7 +35,12 @@ launch:
 `, 0o644)
 	writePayload(t, filepath.Join(asm, "payload", "demo"), "#!/bin/sh\nexit 0\n", 0o755)
 	if script != "" {
-		p := filepath.Join(asm, "tools", toolchainDir(), requires)
+		// Windows 上 gpm 找的是 cot.exe（install 的报错也是这么写的）。
+		name := requires
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		p := filepath.Join(asm, "tools", toolchainDir(), name)
 		writePayload(t, p, script, 0o755)
 		// SHA256SUMS 要覆盖工具链；留空则走"没有 SHA256SUMS"的警告路径，
 		// 这里干脆跳过校验，让用例只盯自举这件事。
@@ -187,15 +192,20 @@ func TestInstallWithEmptyOverridesRequires(t *testing.T) {
 }
 
 // 别人的 bin/ad 不能覆盖（FR-21 / A9）：认那行生成标记，不认路径。
+// 这条闸跟工具链无关，所以清单不带 requires、家用 --dir 钉住 —— 这样三条腿都能跑。
 func TestInstallRefusesForeignLauncher(t *testing.T) {
 	home := fakeHome(t)
 	root := installHome(home)
-	asm := toolchainAssembly(t, "ai-desk", "ad", "cot", "#!/bin/sh\nexit 0\n")
+	asm := toolchainAssembly(t, "ai-desk", "ad", "", "")
 
-	theirs := filepath.Join(root, "bin", "ad")
-	writePayload(t, theirs, "#!/bin/sh\necho 别人装的 ad\n", 0o755)
+	name := "ad"
+	if runtime.GOOS == "windows" {
+		name = "ad.cmd"
+	}
+	theirs := filepath.Join(root, "bin", name)
+	writePayload(t, theirs, "echo 别人装的 ad\n", 0o755)
 
-	err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard})
+	err := Install(asm, Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard})
 	if err == nil {
 		t.Fatal("覆盖了别人的 bin/ad")
 	}
@@ -207,7 +217,7 @@ func TestInstallRefusesForeignLauncher(t *testing.T) {
 	}
 
 	// --force 才放行。
-	if err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard, Force: true}); err != nil {
+	if err := Install(asm, Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard, Force: true}); err != nil {
 		t.Fatalf("--force 之后仍然失败：%v", err)
 	}
 }
@@ -217,14 +227,14 @@ func TestInstallRefusesCmdOwnedByAnotherPackage(t *testing.T) {
 	home := fakeHome(t)
 	root := installHome(home)
 
-	first := toolchainAssembly(t, "ai-desk", "ad", "cot", "#!/bin/sh\nexit 0\n")
-	if err := Install(first, Options{Yes: true, NoPath: true, Out: io.Discard}); err != nil {
+	first := toolchainAssembly(t, "ai-desk", "ad", "", "")
+	if err := Install(first, Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 
 	// 另一个应用，同一个命令名 ad（id 不同，所以不是覆盖安装）。
-	second := toolchainAssembly(t, "other-app", "ad", "cot", "#!/bin/sh\nexit 0\n")
-	err := Install(second, Options{Yes: true, NoPath: true, Out: io.Discard})
+	second := toolchainAssembly(t, "other-app", "ad", "", "")
+	err := Install(second, Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard})
 	if err == nil {
 		t.Fatal("命令名已经被 ai-desk 占着，却装成功了")
 	}
@@ -245,7 +255,7 @@ func TestInstallRefusesCmdOwnedByAnotherPackage(t *testing.T) {
 // 简称不能叫 gpm：那是 gpm 自己占着的。
 func TestInstallRefusesGpmAsCmd(t *testing.T) {
 	fakeHome(t)
-	asm := toolchainAssembly(t, "weird", "gpm", "cot", "#!/bin/sh\nexit 0\n")
+	asm := toolchainAssembly(t, "weird", "gpm", "", "")
 
 	err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard})
 	if err == nil {
