@@ -23,7 +23,7 @@ func toolchainDir() string { return runtime.GOOS + "_" + runtime.GOARCH }
 func toolchainAssembly(t *testing.T, id, short, requires string, script string) string {
 	t.Helper()
 	asm := t.TempDir()
-	writeFixture(t, filepath.Join(asm, short+"-manifest.yaml"), `id: `+id+`
+	writePayload(t, filepath.Join(asm, short+"-manifest.yaml"), `id: `+id+`
 name: Demo
 version: 0.1.0
 requires: [`+requires+`]
@@ -32,17 +32,11 @@ entry:
     exe: demo
 launch:
   cmd: `+short+`
-`)
-	writeFixture(t, filepath.Join(asm, "payload", "demo"), "#!/bin/sh\nexit 0\n")
-	if err := os.Chmod(filepath.Join(asm, "payload", "demo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`, 0o644)
+	writePayload(t, filepath.Join(asm, "payload", "demo"), "#!/bin/sh\nexit 0\n", 0o755)
 	if script != "" {
 		p := filepath.Join(asm, "tools", toolchainDir(), requires)
-		writeFixture(t, p, script)
-		if err := os.Chmod(p, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		writePayload(t, p, script, 0o755)
 		// SHA256SUMS 要覆盖工具链；留空则走"没有 SHA256SUMS"的警告路径，
 		// 这里干脆跳过校验，让用例只盯自举这件事。
 	}
@@ -198,11 +192,8 @@ func TestInstallRefusesForeignLauncher(t *testing.T) {
 	root := installHome(home)
 	asm := toolchainAssembly(t, "ai-desk", "ad", "cot", "#!/bin/sh\nexit 0\n")
 
-	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	theirs := filepath.Join(root, "bin", "ad")
-	writeFixture(t, theirs, "#!/bin/sh\necho 别人装的 ad\n")
+	writePayload(t, theirs, "#!/bin/sh\necho 别人装的 ad\n", 0o755)
 
 	err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard})
 	if err == nil {
