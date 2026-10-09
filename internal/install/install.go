@@ -226,7 +226,10 @@ func Install(src string, opt Options) error {
 				return fail(err)
 			}
 			if changed {
-				paths = append(paths, ledger.PathEdit{Path: integrate.WindowsPathEditPath})
+				// 伪路径没有「那个文件原本在不在」这回事，但账本是给人看的：
+				// 能走到这里就说明这条 PATH 记录确实是这次加进去的，所以记 true。
+				// 卸载时它被单独处理（见 Uninstall），不看这个值。
+				paths = append(paths, ledger.PathEdit{Path: integrate.WindowsPathEditPath, Created: true})
 				rollback = append(rollback, func() { integrate.RemoveWindowsPath(h.Bin()) })
 				fmt.Fprintf(out, "已写入用户 PATH（注册表 HKCU\\Environment），并广播了环境变更通知。\n")
 			} else {
@@ -766,6 +769,17 @@ func installSelf(binDir string) (dest string, copied, keptOld bool, err error) {
 	return dest, true, false, nil
 }
 
+// retryHint 是「想把 PATH 集成也做上，该重跑哪条命令」的写法。
+//
+// 按平台分开写：Windows 上包里的二进制叫 gpm.exe，用户也是解压后在同一个目录里
+// 双击 install.cmd 的，`./gpm install . --yes` 在 cmd 里根本敲不出来。
+func retryHint(goos string) string {
+	if goos == "windows" {
+		return "gpm.exe install . --yes"
+	}
+	return "./gpm install . --yes"
+}
+
 // askPath 用人话请求一次许可。非交互环境（不是终端）时直接跳过。
 //
 // files 只对类 Unix 有意义；Windows 上 PATH 在注册表里，没有文件可列。
@@ -790,7 +804,7 @@ func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir, goos string, fi
 	if err != nil && strings.TrimSpace(line) == "" {
 		// 一个字节都没读到：从脚本里跑的、双击运行、或者 stdin 是 /dev/null。
 		// 这时候别假装用户回答了「不」，要把发生了什么、以及怎么才能装全说清楚。
-		fmt.Fprintf(out, "没有读到你的输入，已跳过 PATH 集成。\n想让命令 %q 在终端里能用，重跑一次并明确同意：\n  ./gpm install . --yes\n", cmd)
+		fmt.Fprintf(out, "没有读到你的输入，已跳过 PATH 集成。\n想让命令 %q 在终端里能用，重跑一次并明确同意：\n  %s\n", cmd, retryHint(goos))
 		return false
 	}
 	s := strings.ToLower(strings.TrimSpace(line))

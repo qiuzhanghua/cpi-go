@@ -286,6 +286,55 @@ func TestInstallScriptsAreSelfContained(t *testing.T) {
 	}
 }
 
+// TestInstallBatchLineEndingsAndEncoding 钉住 install.cmd 的两个「必须」：
+// 行尾只能是 CRLF，内容只能是 ASCII。
+//
+// 这不是洁癖。cmd.exe 按当前代码页逐行读批处理，而 UTF-8 的非 ASCII 字节在
+// 别的代码页下解码时会把行尾的 LF 一起吞掉，于是注释行与下一行黏连、解码残渣
+// 被当成命令去执行 —— 实测（OEM 936 的中文 Windows）用户每次双击 install.cmd
+// 都会先看到一行 `'…' is not recognized as an internal or external command`。
+// 2×2 对照：CRLF+中文干净、LF+ASCII 干净，只有 LF+非 ASCII 复现。install.sh
+// 那边要求正好相反（CRLF 会让 `#!/bin/sh` 失效），所以两份脚本各钉一个测试，
+// 免得日后有人「顺手统一」了行尾。
+func TestInstallBatchLineEndingsAndEncoding(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+	}{
+		{"没给 --default-dir", InstallBatch("", nil)},
+		{"--default-dir 是工具链的家", InstallBatch("~/cot", nil)},
+		{"按 requires 定家", InstallBatch("", []string{"cot"})},
+		{"--default-dir 是绝对路径", InstallBatch(`D:\apps\ad`, nil)},
+	}
+	for _, tc := range cases {
+		if lf, crlf := strings.Count(tc.got, "\n"), strings.Count(tc.got, "\r\n"); lf != crlf {
+			t.Errorf("%s：有 %d 个换行不是 CRLF —— cmd 会把注释行和下一行黏连", tc.name, lf-crlf)
+		}
+		if i := firstNonASCII(tc.got); i >= 0 {
+			t.Errorf("%s：第 %d 个字节是 0x%02X —— 非 ASCII 在别的代码页下会变乱码，叠加 LF 还会被当成命令执行",
+				tc.name, i, tc.got[i])
+		}
+		if !strings.Contains(tc.got, `set "RC=%ERRORLEVEL%"`) || !strings.Contains(tc.got, "exit /b %RC%") {
+			t.Errorf("%s：install.cmd 没把 gpm 的退出码带出去 —— 末行若是 pause，装失败也会 exit 0", tc.name)
+		}
+	}
+
+	// 反方向：install.sh 必须是 LF。
+	if sh := InstallScript("~/cot", []string{"cot"}); strings.Contains(sh, "\r\n") {
+		t.Error("install.sh 里出现了 CRLF：`#!/bin/sh` 会失效，unix 上直接跑不起来")
+	}
+}
+
+// firstNonASCII 返回第一个非 ASCII 字节的下标，全 ASCII 时返回 -1。
+func firstNonASCII(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 0x7f {
+			return i
+		}
+	}
+	return -1
+}
+
 // TestDefaultDirIsBakedIntoInstallers 守住 --default-dir 的职责：把「装到
 // 哪儿」写进脚本。工具链的家（~/cot）写成 `${COT_HOME:-$HOME/cot}` ——
 // 脚本里给的是默认值，用户在 shell 里设的家仍然算数。
