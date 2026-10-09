@@ -53,10 +53,16 @@ launch:
 }
 
 // fakeHome 把 HOME 挪到临时目录：启动器、Applications 软链、~/cot 都不碰真家。
+//
+// USERPROFILE 必须一起设：Windows 上 os.UserHomeDir() 读的是它，不认 HOME ——
+// 只设 HOME 会让隔离**静默失效**，用例把家解析成开发机真实的 ~/cot。实测后果是
+// 「包里没有工具链就应当拒绝」这条用例在真家里找到真的 bin\cot.exe，于是跳过
+// 自举、装成功了，还在真家里留下账本与启动器。
 func fakeHome(t *testing.T) string {
 	t.Helper()
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("COT_HOME", "")
 	t.Setenv("TDP_HOME", "")
 	return h
