@@ -1,4 +1,4 @@
-// Package install 是 cpi 的内核：安装、列举、卸载。
+// Package install 是 gpm 的内核：安装、列举、卸载。
 //
 // 命令行与（将来的）图形界面只是这层的两个壳，走的必须是同一条流水线。
 package install
@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiuzhanghua/cpi-go/internal/home"
-	"github.com/qiuzhanghua/cpi-go/internal/integrate"
-	"github.com/qiuzhanghua/cpi-go/internal/ledger"
-	"github.com/qiuzhanghua/cpi-go/internal/manifest"
-	"github.com/qiuzhanghua/cpi-go/internal/proc"
-	"github.com/qiuzhanghua/cpi-go/internal/stage"
+	"github.com/qiuzhanghua/gpm-go/internal/home"
+	"github.com/qiuzhanghua/gpm-go/internal/integrate"
+	"github.com/qiuzhanghua/gpm-go/internal/ledger"
+	"github.com/qiuzhanghua/gpm-go/internal/manifest"
+	"github.com/qiuzhanghua/gpm-go/internal/proc"
+	"github.com/qiuzhanghua/gpm-go/internal/stage"
 )
 
 // Options 控制一次安装。
 type Options struct {
-	Dir        string    // --dir，覆盖 CPI_HOME
+	Dir        string    // --dir，覆盖 GPM_HOME
 	Yes        bool      // 不询问，直接做 PATH 集成
 	NoPath     bool      // 完全跳过 PATH 集成
 	SkipVerify bool      // 跳过 SHA256SUMS 校验（只用于调试）
@@ -97,7 +97,7 @@ func Install(src string, opt Options) error {
 		return err
 	}
 	if prev := led.Find(m.ID); prev != nil {
-		if err := checkNotRunning(prev, opt.Force, "重新运行一次 cpi install", out); err != nil {
+		if err := checkNotRunning(prev, opt.Force, "重新运行一次 gpm install", out); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "检测到已装过的 %s %s，先卸掉旧版本。\n", prev.Name, prev.Version)
@@ -195,9 +195,12 @@ func Install(src string, opt Options) error {
 		}
 	}
 
-	self, err := installSelf(h.Bin())
+	self, copied, keptOld, err := installSelf(h.Bin())
 	if err != nil {
-		fmt.Fprintf(out, "提示：没能把 cpi 自己拷进 %s：%v\n", h.Bin(), err)
+		fmt.Fprintf(out, "提示：没能把 gpm 自己拷进 %s：%v\n", h.Bin(), err)
+	}
+	if keptOld {
+		fmt.Fprintf(out, "提示：%s 已经有一个 gpm，这次没覆盖它（卸载时也不会删它）。\n", self)
 	}
 
 	led.Put(ledger.Package{
@@ -215,7 +218,11 @@ func Install(src string, opt Options) error {
 		PathEdits:   paths,
 		Verified:    verified,
 	})
-	led.Self = self
+	// 只记「我们自己放进去的那一份」。原来就在那儿的 gpm 属于用户，
+	// 卸载最后一个包时不能顺手把它删掉（见 installSelf）。
+	if copied {
+		led.Self = self
+	}
 	if err := led.Save(h.LedgerPath()); err != nil {
 		return fail(err)
 	}
@@ -299,7 +306,7 @@ func Uninstall(dir, id string, force bool, out io.Writer) error {
 	if p == nil {
 		return fmt.Errorf("账本里没有 %q", id)
 	}
-	if err := checkNotRunning(p, force, "重新运行一次 cpi uninstall", out); err != nil {
+	if err := checkNotRunning(p, force, "重新运行一次 gpm uninstall", out); err != nil {
 		return err
 	}
 	if err := remove(h, led, id, out); err != nil {
@@ -433,53 +440,64 @@ func procsText(procs []proc.Process) string {
 	return strings.Join(parts, "，")
 }
 
-// installSelf 把正在运行的 cpi 拷进 <CPI_HOME>/bin，保证之后 list/uninstall 还找得到它。
-func installSelf(binDir string) (string, error) {
+// installSelf 把正在运行的 gpm 拷进 <家目录>/bin，保证之后 list/uninstall 还找得到它。
+//
+// 已经有一个 gpm 就不再装，也不覆盖。装到哪儿是安装器传进来的（可能是 ~/cot
+// 这种和这个包毫无关系的目录），那里原本那个 gpm 属于用户，不该被包里的旧版本
+// 顶掉 —— 那正是「装个旧包把新 gpm 降级」的来路。
+//
+// 三个返回值：dest 是那个位置；copied 表示这次真的拷了一份（即这个文件是我们
+// 放的，卸载最后一个包时该由我们删掉）；keptOld 表示那儿的 gpm 本来就有、我们
+// 没动它（这种情况不写进账本的 self 字段，免得卸载时删掉用户自己的东西）。
+func installSelf(binDir string) (dest string, copied, keptOld bool, err error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", err
+		return "", false, false, err
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	dest := filepath.Join(binDir, "cpi")
+	dest = filepath.Join(binDir, "gpm")
 	if runtime.GOOS == "windows" {
 		dest += ".exe"
 	}
 	if filepath.Clean(exe) == filepath.Clean(dest) {
-		return dest, nil
+		return dest, false, false, nil // 运行的就是它，无事可做
+	}
+	if fi, err := os.Stat(dest); err == nil && !fi.IsDir() {
+		return dest, false, true, nil // 已经有了，原样留着
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return "", err
+		return "", false, false, err
 	}
 	in, err := os.Open(exe)
 	if err != nil {
-		return "", err
+		return "", false, false, err
 	}
 	defer in.Close()
 	tmp := dest + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
-		return "", err
+		return "", false, false, err
 	}
 	if _, err := io.Copy(f, in); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return "", err
+		return "", false, false, err
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
-		return "", err
+		return "", false, false, err
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		os.Remove(tmp)
-		return "", err
+		return "", false, false, err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
-		return "", err
+		return "", false, false, err
 	}
-	return dest, nil
+	return dest, true, false, nil
 }
 
 // askPath 用人话请求一次许可。非交互环境（不是终端）时直接跳过。
@@ -494,9 +512,9 @@ func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir, goos string, fi
 		return false
 	}
 	if goos == "windows" {
-		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，cpi 需要把\n  %s\n加进你的用户 PATH（注册表 HKCU\\Environment）。随时可以用 cpi uninstall 撤销。\n", cmd, binDir)
+		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，gpm 需要把\n  %s\n加进你的用户 PATH（注册表 HKCU\\Environment）。随时可以用 gpm uninstall 撤销。\n", cmd, binDir)
 	} else {
-		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，cpi 需要把\n  %s\n加进 PATH。做法是在下面这些文件末尾追加一小段标记块（随时可用 cpi uninstall 撤销）：\n", cmd, binDir)
+		fmt.Fprintf(out, "\n为了让命令 %q 在终端里能用，gpm 需要把\n  %s\n加进 PATH。做法是在下面这些文件末尾追加一小段标记块（随时可用 gpm uninstall 撤销）：\n", cmd, binDir)
 		for _, f := range files {
 			fmt.Fprintf(out, "  %s\n", f)
 		}
@@ -506,7 +524,7 @@ func askPath(out io.Writer, in io.Reader, yes bool, cmd, binDir, goos string, fi
 	if err != nil && strings.TrimSpace(line) == "" {
 		// 一个字节都没读到：从脚本里跑的、双击运行、或者 stdin 是 /dev/null。
 		// 这时候别假装用户回答了「不」，要把发生了什么、以及怎么才能装全说清楚。
-		fmt.Fprintf(out, "没有读到你的输入，已跳过 PATH 集成。\n想让命令 %q 在终端里能用，重跑一次并明确同意：\n  ./cpi install . --yes\n", cmd)
+		fmt.Fprintf(out, "没有读到你的输入，已跳过 PATH 集成。\n想让命令 %q 在终端里能用，重跑一次并明确同意：\n  ./gpm install . --yes\n", cmd)
 		return false
 	}
 	s := strings.ToLower(strings.TrimSpace(line))

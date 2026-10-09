@@ -1,5 +1,5 @@
-// 命令 cpi 是一个单应用安装器：把分发包装到 ~/ad，接好终端命令与图形入口，
-// 并且能用 cpi uninstall 干净地撤掉。
+// 命令 gpm 是一个 GUI 应用安装器：把分发包装到安装器指定的家目录，接好终端
+// 命令与图形入口，并且能用 gpm uninstall 干净地撤掉。
 //
 // 命令行与（将来的）图形界面是同一层内核的两个壳。
 package main
@@ -10,15 +10,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/qiuzhanghua/cpi-go/internal/home"
-	"github.com/qiuzhanghua/cpi-go/internal/install"
-	"github.com/qiuzhanghua/cpi-go/internal/pack"
+	"github.com/qiuzhanghua/gpm-go/internal/home"
+	"github.com/qiuzhanghua/gpm-go/internal/install"
+	"github.com/qiuzhanghua/gpm-go/internal/pack"
 )
 
 // reorder 把选项挪到位置参数前面。
 //
 // 标准库的 flag 一旦遇到第一个非选项参数就停止解析，于是
-// `cpi install . --dir ~/ad` 会把 --dir 当成第二个位置参数。这里不打算
+// `gpm install . --dir ~/ad` 会把 --dir 当成第二个位置参数。这里不打算
 // 教训用户，直接把参数重排一次；`--` 之后的一律当位置参数。
 func reorder(fs *flag.FlagSet, args []string) []string {
 	takesValue := map[string]bool{}
@@ -74,7 +74,7 @@ func main() {
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Printf("cpi %s\n", version)
+		fmt.Printf("gpm %s\n", version)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 	default:
@@ -83,20 +83,20 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cpi: %v\n", err)
+		fmt.Fprintf(os.Stderr, "gpm: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
-	dir := fs.String("dir", "", "装到哪个家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	dir := fs.String("dir", "", "装到哪个家目录（默认 $GPM_HOME，再默认当前目录）")
 	yes := fs.Bool("yes", false, "不询问，直接做 PATH 集成")
 	noPath := fs.Bool("no-path", false, "完全不碰 PATH")
 	skip := fs.Bool("skip-verify", false, "跳过 SHA256SUMS 校验（只用于调试）")
 	force := fs.Bool("force", false, "要换掉的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi install <目录或 .zip> [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm install <目录或 .zip> [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -117,10 +117,10 @@ func cmdInstall(args []string) error {
 
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
 	force := fs.Bool("force", false, "要删的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi uninstall <id> [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm uninstall <id> [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -135,9 +135,9 @@ func cmdUninstall(args []string) error {
 
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi list [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm list [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -148,9 +148,9 @@ func cmdList(args []string) error {
 
 func cmdWhere(args []string) error {
 	fs := flag.NewFlagSet("where", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi where <id> [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm where <id> [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -168,9 +168,10 @@ func cmdPack(args []string) error {
 	out := fs.String("out", "", "输出 zip 路径（默认 dist/<id>-<version>-<os>-<arch>.zip）")
 	goos := fs.String("os", "", "目标平台（默认当前平台）")
 	goarch := fs.String("arch", "", "目标架构（默认当前架构）")
-	self := fs.String("cpi", "", "要嵌进包里的 cpi 可执行文件（默认当前进程）")
+	self := fs.String("gpm", "", "要嵌进包里的 gpm 可执行文件（默认当前进程）")
+	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd 的默认安装根，如 ~/cot（留空则不指定）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi pack <含 manifest.yaml 与 payload/ 的目录> [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm pack <含 manifest.yaml 与 payload/ 的目录> [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -181,12 +182,13 @@ func cmdPack(args []string) error {
 		return fmt.Errorf("需要且只需要一个参数：装配目录")
 	}
 	p, err := pack.Build(pack.Options{
-		Dir:    fs.Arg(0),
-		Out:    *out,
-		GOOS:   *goos,
-		GOARCH: *goarch,
-		Self:   *self,
-		Log:    os.Stdout,
+		Dir:        fs.Arg(0),
+		Out:        *out,
+		GOOS:       *goos,
+		GOARCH:     *goarch,
+		Self:       *self,
+		DefaultDir: *ddir,
+		Log:        os.Stdout,
 	})
 	if err != nil {
 		return err
@@ -197,9 +199,9 @@ func cmdPack(args []string) error {
 
 func cmdEnv(args []string) error {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: cpi env [选项]   # 打印把 bin/ 加进 PATH 的 shell 片段")
+		fmt.Fprintln(os.Stderr, "用法: gpm env [选项]   # 打印把 bin/ 加进 PATH 的 shell 片段")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -214,17 +216,19 @@ func cmdEnv(args []string) error {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintf(w, `cpi %s —— 单应用安装器
+	fmt.Fprintf(w, `gpm %s —— GUI 应用安装器
 
 用法:
-  cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
-  cpi list
-  cpi where <id>
-  cpi uninstall <id> [--force]
-  cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
-  cpi env
-  cpi version
+  gpm install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
+  gpm list
+  gpm where <id>
+  gpm uninstall <id> [--force]
+  gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
+  gpm env
+  gpm version
 
-家目录按 --dir > $CPI_HOME > ~/ad 的顺序确定。
+家目录按 --dir > $GPM_HOME > 当前目录 的顺序确定。
+装到哪儿通常是安装器（install.sh / install.cmd）传进来的，那个值由
+gpm pack --default-dir 烘进脚本；gpm 自己只认上面这个顺序。
 `, version)
 }

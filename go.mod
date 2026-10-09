@@ -1,4 +1,4 @@
-module github.com/qiuzhanghua/cpi-go
+module github.com/qiuzhanghua/gpm-go
 
 go 1.27.1
 

@@ -12,7 +12,7 @@ import (
 )
 
 // helperEnv 让被拷出去的那份测试二进制只睡觉，不再跑测试。
-const helperEnv = "CPI_PROC_TEST_HELPER"
+const helperEnv = "GPM_PROC_TEST_HELPER"
 
 // TestFindRealProcess 真起一个进程，验证 Find 认得出来。
 //

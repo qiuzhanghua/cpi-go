@@ -1,10 +1,10 @@
 // Package pack 把一个「已经装配好的目录」（manifest.yaml + payload/）打成分发包。
 //
-// 为什么这件事要收进 cpi、而不是留一个 shell 脚本：
+// 为什么这件事要收进 gpm、而不是留一个 shell 脚本：
 // 打包要做三件在跨平台上很难做对的事 —— 算 sha256、保住可执行位、处理符号链接。
 // Windows 的 Git Bash 里连 zip 都没有，sha256sum 也不保证有；而 macOS 的 .app
 // 内部是有符号链接的，普通 zip 会把它们展开成副本（甚至坏掉）。
-// cpi 本来就是跨平台的 Go 程序，同一份实现三个平台都一样。
+// gpm 本来就是跨平台的 Go 程序，同一份实现三个平台都一样。
 package pack
 
 import (
@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiuzhanghua/cpi-go/internal/manifest"
-	"github.com/qiuzhanghua/cpi-go/internal/stage"
+	"github.com/qiuzhanghua/gpm-go/internal/manifest"
+	"github.com/qiuzhanghua/gpm-go/internal/stage"
 )
 
 // 包里那两个「用户双击/运行」的入口。由 pack 生成，装配方不用自己写。
@@ -30,20 +30,45 @@ const (
 	InstallCMD = "install.cmd"
 )
 
+// scriptDir 把 --default-dir 给的路径转成脚本里能直接用的写法。
+//
+// 要处理的只有开头的 `~`：双引号里的 `~` 不会展开，`$HOME` / `%USERPROFILE%` 会。
+// 除此之外原样照抄 —— 装到哪儿是打包方的决定，这里不替它做主。
+func scriptDir(defaultDir, goos string) string {
+	if defaultDir != "~" && !strings.HasPrefix(defaultDir, "~/") && !strings.HasPrefix(defaultDir, `~\`) {
+		return defaultDir
+	}
+	rest := defaultDir[1:]
+	if goos == "windows" {
+		// 顺手把分隔符也换掉：`~/cot` 展开成 `%USERPROFILE%/cot` 能用，
+		// 但在 Windows 上看起来就是个错的东西。
+		return `%USERPROFILE%` + strings.ReplaceAll(rest, "/", `\`)
+	}
+	return "$HOME" + rest
+}
+
 // InstallScript 是 install.sh 的原文。
 //
-// 它只做三件事：切到自己的目录、给 cpi 补可执行位、把安装交给 cpi。
+// 它只做三件事：切到自己的目录、给 gpm 补可执行位、把安装交给 gpm。
 // 之所以坚持 `chmod +x` 而不是指望解压工具：Windows 的资源管理器解压会丢掉
 // Unix 权限位，用户也可能用别的方式解压。安装逻辑一行都不写在这里 ——
 // 写在这里就等于每个平台各维护一份，而它们迟早会不一致。
-func InstallScript() string {
-	return `#!/bin/sh
-# 由 cpi pack 生成，请勿手工编辑。
+//
+// defaultDir 是「装到哪儿」的默认值，由 `gpm pack --default-dir` 烘进来；
+// 留空表示打包方没有指定，那就交给 gpm 自己的相对路径默认值（当前目录）。
+// 无论如何 $GPM_HOME 的优先级都更高，用户能覆盖。
+func InstallScript(defaultDir string) string {
+	fallback := "."
+	if defaultDir != "" {
+		fallback = scriptDir(defaultDir, "linux")
+	}
+	return fmt.Sprintf(`#!/bin/sh
+# 由 gpm pack 生成，请勿手工编辑。
 set -eu
 cd "$(dirname "$0")"
-chmod +x ./cpi 2>/dev/null || true
-exec ./cpi install . --dir "${CPI_HOME:-$HOME/ad}"
-`
+chmod +x ./gpm 2>/dev/null || true
+exec ./gpm install . --dir "${GPM_HOME:-%s}"
+`, fallback)
 }
 
 // InstallBatch 是 install.cmd 的原文（Windows 用户双击这个）。
@@ -51,15 +76,19 @@ exec ./cpi install . --dir "${CPI_HOME:-$HOME/ad}"
 // 在 Windows 上优先用 .cmd 而不是 .ps1：PowerShell 默认 ExecutionPolicy 是
 // Restricted，右键「使用 PowerShell 运行」常常直接报「在此系统上禁止运行脚本」，
 // 而 .cmd 双击就能跑。
-func InstallBatch() string {
-	return `@echo off
-rem 由 cpi pack 生成，请勿手工编辑。
+func InstallBatch(defaultDir string) string {
+	fallback := "."
+	if defaultDir != "" {
+		fallback = scriptDir(defaultDir, "windows")
+	}
+	return fmt.Sprintf(`@echo off
+rem 由 gpm pack 生成，请勿手工编辑。
 setlocal
-cd /d "%~dp0"
-if not defined CPI_HOME set "CPI_HOME=%USERPROFILE%\ad"
-cpi.exe install . --dir "%CPI_HOME%"
+cd /d "%%~dp0"
+if not defined GPM_HOME set "GPM_HOME=%s"
+gpm.exe install . --dir "%%GPM_HOME%%"
 pause
-`
+`, fallback)
 }
 
 // Options 是打一个包所需的全部输入。
@@ -68,15 +97,18 @@ type Options struct {
 	Out    string // 输出 zip 路径；留空则 dist/<id>-<version>-<goos>-<goarch>.zip
 	GOOS   string // 目标平台；留空用当前平台
 	GOARCH string
-	Self   string    // 要嵌进包里的 cpi 可执行文件；留空用当前进程
-	Log    io.Writer // 进度输出；留空则静默
+	Self   string // 要嵌进包里的 gpm 可执行文件；留空用当前进程
+	// DefaultDir 烘进 install.sh / install.cmd 的默认安装根，例如 ~/cot。
+	// 留空表示打包方不指定，落到 gpm 自己的相对路径默认值（解压出来的那个目录）。
+	DefaultDir string
+	Log        io.Writer // 进度输出；留空则静默
 }
 
 // Build 打出一个可分发的 zip，返回它的绝对路径。
 //
 // 产物的内容与顺序都已固定：
 //
-//	install.sh  install.cmd  cpi  manifest.yaml  SHA256SUMS  payload/…
+//	install.sh  install.cmd  gpm  manifest.yaml  SHA256SUMS  payload/…
 func Build(opt Options) (string, error) {
 	goos, goarch := opt.GOOS, opt.GOARCH
 	if goos == "" {
@@ -111,7 +143,7 @@ func Build(opt Options) (string, error) {
 	}
 	fi, err := os.Stat(self)
 	if err != nil {
-		return "", fmt.Errorf("找不到 cpi 可执行文件 %s: %w", self, err)
+		return "", fmt.Errorf("找不到 gpm 可执行文件 %s: %w", self, err)
 	}
 	if fi.IsDir() {
 		return "", fmt.Errorf("%s 是个目录，不是可执行文件", self)
@@ -142,7 +174,7 @@ func Build(opt Options) (string, error) {
 	defer f.Close()
 
 	zw := zip.NewWriter(f)
-	err = writeAll(zw, dir, self, goos, sums)
+	err = writeAll(zw, dir, self, goos, opt.DefaultDir, sums)
 	if cerr := zw.Close(); err == nil {
 		err = cerr
 	}
@@ -158,20 +190,20 @@ func Build(opt Options) (string, error) {
 	return out, nil
 }
 
-func writeAll(zw *zip.Writer, dir, self, goos string, sums []byte) error {
+func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte) error {
 	when := time.Now()
 
-	if err := addBytes(zw, InstallSH, 0o755, []byte(InstallScript()), when); err != nil {
+	if err := addBytes(zw, InstallSH, 0o755, []byte(InstallScript(defaultDir)), when); err != nil {
 		return err
 	}
-	if err := addBytes(zw, InstallCMD, 0o644, []byte(InstallBatch()), when); err != nil {
+	if err := addBytes(zw, InstallCMD, 0o644, []byte(InstallBatch(defaultDir)), when); err != nil {
 		return err
 	}
 
-	// 目标平台是 Windows 时，包里的二进制必须叫 cpi.exe —— install.cmd 调的就是它。
-	selfName := "cpi"
+	// 目标平台是 Windows 时，包里的二进制必须叫 gpm.exe —— install.cmd 调的就是它。
+	selfName := "gpm"
 	if goos == "windows" {
-		selfName = "cpi.exe"
+		selfName = "gpm.exe"
 	}
 	mode := fs.FileMode(0o755)
 	if fi, err := os.Stat(self); err == nil {

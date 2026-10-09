@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiuzhanghua/cpi-go/internal/home"
-	"github.com/qiuzhanghua/cpi-go/internal/ledger"
-	"github.com/qiuzhanghua/cpi-go/internal/proc"
+	"github.com/qiuzhanghua/gpm-go/internal/home"
+	"github.com/qiuzhanghua/gpm-go/internal/ledger"
+	"github.com/qiuzhanghua/gpm-go/internal/proc"
 )
 
 // helperEnv 让被拷出去的那份测试二进制只睡觉：它扮演"正在运行的那个应用"。
-const helperEnv = "CPI_INSTALL_TEST_HELPER"
+const helperEnv = "GPM_INSTALL_TEST_HELPER"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(helperEnv) == "1" {
@@ -147,7 +147,7 @@ func TestUninstallForceGoesThroughButSaysSo(t *testing.T) {
 // TestInstallRefusesToOverwriteWhileTheAppIsRunning 走的是完整的一条路：
 // 真打一个包、真装一次、真把它跑起来、再真装第二次。
 //
-// 覆盖安装比卸载更险：cpi 会先把整个包目录 RemoveAll 掉，跑着的那个进程
+// 覆盖安装比卸载更险：gpm 会先把整个包目录 RemoveAll 掉，跑着的那个进程
 // 于是抓着一份已经被删掉的文件继续执行新拷进来的同名文件 —— 版本混用。
 func TestInstallRefusesToOverwriteWhileTheAppIsRunning(t *testing.T) {
 	// 图形入口（~/Applications 或 XDG 的 .desktop）落在真家目录里，

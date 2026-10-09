@@ -81,7 +81,7 @@ func TestEntryPaths(t *testing.T) {
 	t.Run("Windows 开始菜单快捷方式", func(t *testing.T) {
 		appData := `C:\Users\q\AppData\Roaming`
 		dir := WindowsStartMenuDir(appData)
-		for _, part := range []string{"Microsoft", "Windows", "Start Menu", "Programs", "cpi"} {
+		for _, part := range []string{"Microsoft", "Windows", "Start Menu", "Programs", "gpm"} {
 			if !strings.Contains(dir, part) {
 				t.Errorf("开始菜单目录 %q 里少了 %q", dir, part)
 			}

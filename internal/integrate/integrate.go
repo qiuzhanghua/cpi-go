@@ -10,12 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qiuzhanghua/cpi-go/internal/ledger"
+	"github.com/qiuzhanghua/gpm-go/internal/ledger"
 )
 
 const (
-	markerBegin = "# >>> cpi >>>"
-	markerEnd   = "# <<< cpi <<<"
+	markerBegin = "# >>> gpm >>>"
+	markerEnd   = "# <<< gpm <<<"
 )
 
 // Launcher 写出终端启动器并返回它的路径。
@@ -30,7 +30,7 @@ func Launcher(binDir, cmd, entryAbs, kind, goos, mode string) (string, error) {
 	}
 	if goos == "windows" {
 		p := filepath.Join(binDir, cmd+".cmd")
-		body := "@echo off\r\nrem 由 cpi 生成，请勿手工编辑。\r\n\"" + entryAbs + "\" %*\r\n"
+		body := "@echo off\r\nrem 由 gpm 生成，请勿手工编辑。\r\n\"" + entryAbs + "\" %*\r\n"
 		return p, writeFile(p, body, 0o755)
 	}
 
@@ -55,7 +55,7 @@ func Launcher(binDir, cmd, entryAbs, kind, goos, mode string) (string, error) {
 }
 
 func header(comment string) string {
-	return "#!/bin/sh\n# 由 cpi 生成，请勿手工编辑。\n# " + comment + "\n"
+	return "#!/bin/sh\n# 由 gpm 生成，请勿手工编辑。\n# " + comment + "\n"
 }
 
 // BundleExecutable 从 Info.plist 里读出 CFBundleExecutable 并拼出内层二进制路径。

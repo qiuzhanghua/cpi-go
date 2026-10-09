@@ -21,7 +21,7 @@ const pgrep = "/usr/bin/pgrep"
 //
 // macOS 上没有 /proc，能用的只有命令行。pgrep -f 拿正则去匹配整条命令行
 // （各参数用空格拼起来），而进程启动时 argv[0] 就是那个可执行文件的绝对路径：
-// cpi 的启动器走 `open '<绝对路径>'`，双击和 Dock 走 LaunchServices，
+// gpm 的启动器走 `open '<绝对路径>'`，双击和 Dock 走 LaunchServices，
 // 两者交出来的都是绝对路径。所以把正则锚在行首（^），匹配到的就正好是
 // 应用自己的进程：
 //

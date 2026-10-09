@@ -123,10 +123,10 @@ func TestAppLinkWindowsCreatesStartMenuShortcut(t *testing.T) {
 //
 // 它动的是这台机器真实的用户 PATH，所以默认跳过，只在一次性的 CI 机器上打开：
 //
-//	CPI_TEST_REGISTRY=1 go test ./internal/integrate/
+//	GPM_TEST_REGISTRY=1 go test ./internal/integrate/
 func TestUserPathRoundTrip(t *testing.T) {
-	if os.Getenv("CPI_TEST_REGISTRY") != "1" {
-		t.Skip("会改动真实的用户 PATH；设 CPI_TEST_REGISTRY=1 才跑（CI 上开）")
+	if os.Getenv("GPM_TEST_REGISTRY") != "1" {
+		t.Skip("会改动真实的用户 PATH；设 GPM_TEST_REGISTRY=1 才跑（CI 上开）")
 	}
 
 	h, err := openEnvironmentKey()

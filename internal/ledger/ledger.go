@@ -1,4 +1,4 @@
-// Package ledger 读写 <CPI_HOME>/state.json。
+// Package ledger 读写 <GPM_HOME>/state.json。
 //
 // 账本是所有外部副作用（启动器、软链、shell 配置标记块）的唯一真相，
 // 卸载就是回放这份记录。

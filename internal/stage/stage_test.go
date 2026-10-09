@@ -41,7 +41,7 @@ func writeSums(t *testing.T, dir string, lines ...string) {
 func TestVerifySumsKeepsSpacesInPath(t *testing.T) {
 	dir := t.TempDir()
 	rel := "payload/AI Desk.app/Contents/Info.plist"
-	writeFile(t, dir, rel, "hello cpi\n")
+	writeFile(t, dir, rel, "hello gpm\n")
 	writeSums(t, dir, sumOf(t, dir, rel)+"  "+rel)
 
 	ok, err := VerifySums(dir, "payload")
@@ -75,7 +75,7 @@ func TestVerifySumsDetectsTamperInSpacedPath(t *testing.T) {
 func TestVerifySumsAcceptsBinaryMarker(t *testing.T) {
 	dir := t.TempDir()
 	rel := "payload/AI Desk.app/Contents/Info.plist"
-	writeFile(t, dir, rel, "hello cpi\n")
+	writeFile(t, dir, rel, "hello gpm\n")
 	writeSums(t, dir, sumOf(t, dir, rel)+"  *"+rel)
 
 	if _, err := VerifySums(dir, "payload"); err != nil {
@@ -87,7 +87,7 @@ func TestVerifySumsAcceptsBinaryMarker(t *testing.T) {
 func TestVerifySumsRejectsUncoveredFile(t *testing.T) {
 	dir := t.TempDir()
 	listed := "payload/AI Desk.app/Contents/Info.plist"
-	writeFile(t, dir, listed, "hello cpi\n")
+	writeFile(t, dir, listed, "hello gpm\n")
 	writeFile(t, dir, "payload/AI Desk.app/Contents/MacOS/ai-desk", "sneaky\n")
 	writeSums(t, dir, sumOf(t, dir, listed)+"  "+listed)
 

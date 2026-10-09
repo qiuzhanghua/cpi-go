@@ -45,12 +45,12 @@ func DesktopEntryPath(homeDir, id string) string {
 	return filepath.Join(LinuxDataHome(homeDir), "applications", id+".desktop")
 }
 
-// WindowsStartMenuDir 返回 Windows 当前用户「开始菜单 → 程序」下的 cpi 目录。
+// WindowsStartMenuDir 返回 Windows 当前用户「开始菜单 → 程序」下的 gpm 目录。
 //
 // 用 %APPDATA% 而不是自己拼 %USERPROFILE%：前者才是漫游配置的真实位置，
 // 硬拼路径在域环境或改过配置的机器上会写到一个没人看的角落。
 func WindowsStartMenuDir(appData string) string {
-	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "cpi")
+	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "gpm")
 }
 
 // WindowsShortcutPath 返回开始菜单快捷方式（.lnk）的完整路径。

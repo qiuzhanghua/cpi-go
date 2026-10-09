@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 造一个用于测试 cpi 的分发包：<out>/<id>-<version>-<os>-<arch>.zip
+# 造一个用于测试 gpm 的分发包：<out>/<id>-<version>-<os>-<arch>.zip
 #
-#   tools/fixture/make.sh -c ./build/cpi -a /path/to/Real.app
+#   tools/fixture/make.sh -c ./build/gpm -a /path/to/Real.app
 #   tools/fixture/make.sh              # 不带 -a 时造一个假的 .app
 #
 # 选项：
 #   -v 版本（默认 1.0.0）      -o 输出目录（默认 dist）
-#   -a 真实 .app 目录          -c cpi 二进制（放进包里）
+#   -a 真实 .app 目录          -c gpm 二进制（放进包里）
 #   -n 显示名（默认 AI Desk）  -i 包 id（默认 ai-desk）  -x 命令名（默认 ad）
 set -euo pipefail
 
@@ -16,14 +16,14 @@ cmd=${CMD:-ad}
 version=${VERSION:-1.0.0}
 out=${OUT:-dist}
 app_src=${APP_SRC:-}
-cpi_bin=${CPI_BIN:-}
+gpm_bin=${GPM_BIN:-}
 
 while getopts "v:o:a:c:n:i:x:h" opt; do
   case $opt in
     v) version=$OPTARG ;;
     o) out=$OPTARG ;;
     a) app_src=$OPTARG ;;
-    c) cpi_bin=$OPTARG ;;
+    c) gpm_bin=$OPTARG ;;
     n) name=$OPTARG ;;
     i) id=$OPTARG ;;
     x) cmd=$OPTARG ;;
@@ -90,8 +90,8 @@ cat > "$pkg/install.sh" <<'EOF'
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-chmod +x ./cpi 2>/dev/null || true
-exec ./cpi install . --dir "${CPI_HOME:-$HOME/ad}"
+chmod +x ./gpm 2>/dev/null || true
+exec ./gpm install . --dir "${GPM_HOME:-$HOME/ad}"
 EOF
 chmod +x "$pkg/install.sh"
 
@@ -99,16 +99,16 @@ cat > "$pkg/install.cmd" <<'EOF'
 @echo off
 setlocal
 cd /d "%~dp0"
-if not defined CPI_HOME set "CPI_HOME=%USERPROFILE%\ad"
-cpi.exe install . --dir "%CPI_HOME%"
+if not defined GPM_HOME set "GPM_HOME=%USERPROFILE%\ad"
+gpm.exe install . --dir "%GPM_HOME%"
 pause
 EOF
 
 members="install.sh install.cmd manifest.yaml payload"
-if [ -n "$cpi_bin" ]; then
-  cp "$cpi_bin" "$pkg/cpi"
-  chmod +x "$pkg/cpi"
-  members="install.sh install.cmd cpi manifest.yaml payload"
+if [ -n "$gpm_bin" ]; then
+  cp "$gpm_bin" "$pkg/gpm"
+  chmod +x "$pkg/gpm"
+  members="install.sh install.cmd gpm manifest.yaml payload"
 fi
 
 # 逐条 sha256：用 -print0 读，才能应付 .app 名字里的空格
