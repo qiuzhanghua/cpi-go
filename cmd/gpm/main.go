@@ -274,7 +274,7 @@ gpm pack --default-dir 或清单里的 requires；gpm 自己只认上面这个�
 于是 <家目录>/bin/gpm 这个位置本身就把家目录说出来了 —— 用户在新终端里
 敲 gpm list / gpm where / gpm uninstall 时不必带 --dir，也不必让 shell
 一直替 gpm 记着什么环境变量。判据要求所在目录正好叫 bin、文件名正好是 gpm、
-且上一级有账本 state.json，免得把 /usr/local/bin/gpm 这种地方误当成家目录。
+且上一级有账本（<家目录名>-state.json），免得把 /usr/local/bin/gpm 这种地方误当成家目录。
 
 清单里的 requires（cot / tdp）说的是：这个包自带那家工具链（zip 里的
 tools/<os>_<arch>/），装完要让它的命令也能用。装的时候会在那个家里跑一次

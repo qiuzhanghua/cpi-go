@@ -138,7 +138,7 @@ func Install(src string, opt Options) error {
 		}
 	}
 
-	// v3.6：GUI 的实体直接落在家目录下（跟 bin/、lib/、state.json 平级）。
+	// v3.6：GUI 的实体直接落在家目录下（跟 bin/、lib/、账本平级）。
 	// lib/<id>_<版本>_<平台>/ 那套是命令行插件的位置，GUI 程序不放那儿。
 	top, err := payloadTop(payloadRoot, entry)
 	if err != nil {
@@ -364,7 +364,9 @@ func payloadTop(payloadRoot string, entry manifest.Entry) (string, error) {
 // checkAppDir 挡住往家里已经有的东西上摊：v3.6 起应用实体就住在
 // 家目录下，那里同时住着 gpm / 工具链自己的骨架。
 func checkAppDir(h *home.Home, dest string, force bool) error {
-	for _, own := range []string{h.Bin(), h.Lib(), h.Staging(), h.LedgerPath(), h.Log()} {
+	// 账本的新旧两个名字都算家的骨架：旧的那个可能还躺在家里等着迁移
+	// （v3.7 换名），让一个入口把它顶掉就等于把账本弄丢。
+	for _, own := range []string{h.Bin(), h.Lib(), h.Staging(), h.LedgerPath(), h.LegacyLedgerPath(), h.Log()} {
 		if samePath(dest, own, h.GOOS) {
 			return fmt.Errorf("入口不能叫 %q —— 那是这个家自己的东西，换个名字重打包", filepath.Base(dest))
 		}

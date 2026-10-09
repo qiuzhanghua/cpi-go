@@ -1,4 +1,4 @@
-# gpm 包格式与安装布局（契约 · 已冻结 · v3.6）
+# gpm 包格式与安装布局（契约 · 已冻结 · v3.7）
 
 本文只记录**已经拍板**的接口。它是 `AI Desk` 的 CI 与 `gpm` 之间唯一的契约，
 两个仓库各自独立演进时以本文为准。
@@ -7,7 +7,7 @@
 
 | # | 问题 | 裁决 |
 |---|---|---|
-| 1 | gpm 的家目录（安装根）怎么定 | `--dir` > **按清单里 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> **平台数据目录 + 简称**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/cot`）。**v3.5 起没有 `GPM_HOME`**：这个家同时是 cot / tdp 自己的家，gpm 的内部结构（`bin/`、`lib/`、`state.json`、`staging/`）与工具链的东西住在同一个目录里。**v3.6 起 GUI 应用的入口也直接住在这个家的顶层**——`<家>/AI Desk.app`、`<家>/ai-desk.exe`——`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（见第 5 节）。 |
+| 1 | gpm 的家目录（安装根）怎么定 | `--dir` > **按清单里 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> **平台数据目录 + 简称**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/cot`）。**v3.5 起没有 `GPM_HOME`**：这个家同时是 cot / tdp 自己的家，gpm 的内部结构（`bin/`、`lib/`、账本、`staging/`）与工具链的东西住在同一个目录里。**v3.7 起账本按家命名**：`<家>/<家目录名>-state.json`（`~/cot/cot-state.json`），v3.6 及以前的 `state.json` 仍可读、写回时迁移（[`DESIGN.md`](DESIGN.md) D36）。**v3.6 起 GUI 应用的入口也直接住在这个家的顶层**——`<家>/AI Desk.app`、`<家>/ai-desk.exe`——`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（见第 5 节）。 |
 | 2 | gpm 怎么到用户手上 | **分发包自带 gpm**：zip 里同时放 gpm 二进制与几行 bootstrap 脚本，用户解压后跑脚本即可，不需要预装任何东西。清单声明 `requires` 时还要带上 `tools/<os>_<arch>/` 里那家工具链（第 2、7 节）。 |
 | 3 | gpm 的范围 | **GUI 应用的安装器 + 离线搬运 zip 自带的工具链**：只收录带图形界面的程序；一个 zip 装一个应用，**账本本身支持多包**。清单声明 `requires: [cot]` 时，install.sh 先跑 zip 里的 cot（第 7 节）；工具链的资产**不进账本、卸载不碰**（第 6 节）。不做纯 CLI 工具的抓取与安装、不做镜像表/版本源、**没有一行网络代码**——不抓取、不升级，对标 `dpkg` 而不是 `apt`（见 [`DESIGN.md`](DESIGN.md) §0.5、D32/D34）。 |
 
@@ -73,7 +73,7 @@ launch:
   也就是说 `bundle: AI Desk.app` 会落到 `<家>/AI Desk.app`，
   账本里的 `dir` 就是 `<家>/<入口顶层名>`。
 * `payload/` 根下**只能有入口那一个条目**（v3.6）：多一个就报错，一个字节都不落。
-  入口名撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）时即使 `--force` 也拒；
+  入口名撞家骨架（`bin` / `lib` / `staging` / 账本（`<家目录名>-state.json`，旧名 `state.json` 也算）/ `log`）时即使 `--force` 也拒；
   家里已有别人的同名东西时报错、`--force` 才放行（[`DESIGN.md`](DESIGN.md) D35、FR-23）。
 * 路径必须是相对路径，禁止绝对路径、盘符、`..`。
 * `launch.cmd` 必须是合法的可执行文件名（不含 `/`、`\`、`..`），也**不能是 `gpm`**（那是 gpm 自己用的）。
@@ -126,7 +126,7 @@ launch:
 ├── lib/                          # 命令行插件的命名空间（v3.6 起 gpm 不再往里写）
 │   └── go_1.27.1_darwin_arm64/ … # cot 装的插件（gpm 不记账、卸载不碰）
 ├── staging/                      # 解包中转，每次安装一个 unpack-<纳秒>，结束即删
-└── state.json                    # 账本：所有外部副作用的唯一真相
+└── <家目录名>-state.json         # 账本：所有外部副作用的唯一真相（v3.7；v3.6 是 state.json）
 ```
 
 **这个家不是 gpm 独占的**（v3.5）：`bin/` 与 `lib/` 里还有 cot / tdp 自己放的东西——上面带"不记账"注的都是。`gpm uninstall` 只按账本回放、**不扫目录**，否则"卸载一个 GUI 应用"会把用户的 go / java 一起删掉（[`DESIGN.md`](DESIGN.md) D34）。`<家>` 本身是什么路径由调用方决定
@@ -138,7 +138,7 @@ launch:
 终端启动器与 gpm 自己——住在 `bin/`，而 `lib/<id>_<version>_<os>_<arch>/` 只留给
 **命令行插件**（cot 正在用）。这条分界也是 gpm 能"从自己在哪儿反推家目录"的依据（第 1 节）：
 用户在新终端里敲 `gpm list` 时环境里并没有 `COT_HOME`（工具链没被激活过），`<家目录>/bin/gpm` 这个位置
-把它找回来——判据是所在目录正好叫 `bin`、文件名正好是 `gpm`、且上一级有 `state.json`，
+把它找回来——判据是所在目录正好叫 `bin`、文件名正好是 `gpm`、且上一级有账本（`<家目录名>-state.json`；v3.6 及以前的 `state.json` 也认），
 所以 `/usr/local/bin/gpm` 这种地方不会被误认。
 
 **入口落点 = `payload/` 根下那个名字**（v3.6）：gpm 不拼接目录名，`payload/AI Desk.app`
@@ -153,7 +153,7 @@ launch:
 显式加 `--force` 才继续。理由与实现见 `DESIGN.md` §2.9.1。查不出来（平台不支持 / 没权限）时
 只提示、不拦。
 
-## 6. 外部副作用（全部登记在 `state.json`）
+## 6. 外部副作用（全部登记在账本 `<家目录名>-state.json` 里）
 
 | 平台 | 副作用 | 卸载时 |
 |---|---|---|
@@ -237,7 +237,7 @@ gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文
 ```
 
 家的解析优先级：`--dir` > **按 `requires` 取的家**（`$COT_HOME` / `$TDP_HOME`）> 从 gpm 自己的位置推断
-（二进制正好在 `<家目录>/bin/gpm`、且上一级有 `state.json` 时，家目录就是上一级）>
+（二进制正好在 `<家目录>/bin/gpm`、且上一级有账本（`<家目录名>-state.json`，旧名 `state.json` 也认）时，家目录就是上一级）>
 **平台数据目录/<简称>**（`requires` 为空时：macOS `~/Library/Application Support`、
 Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前目录。
 
@@ -252,4 +252,4 @@ Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前�
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.6：gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.7：账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。

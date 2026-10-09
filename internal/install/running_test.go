@@ -103,7 +103,7 @@ func TestUninstallRefusesWhileTheAppIsRunning(t *testing.T) {
 	}
 
 	// 拦下就得是真的没动手：账本原样，目录原样。
-	led, err := ledger.Load(filepath.Join(root, "state.json"))
+	led, err := ledger.Load(ledgerPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestUninstallRefusesWhileTheAppIsRunning(t *testing.T) {
 	if err := Uninstall(root, "demo", false, &out); err != nil {
 		t.Fatalf("应用已经退出了，卸载该成功：%v\n输出：\n%s", err, out.String())
 	}
-	led, err = ledger.Load(filepath.Join(root, "state.json"))
+	led, err = ledger.Load(ledgerPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}

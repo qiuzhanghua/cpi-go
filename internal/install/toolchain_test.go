@@ -8,8 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qiuzhanghua/gpm-go/internal/home"
 	"github.com/qiuzhanghua/gpm-go/internal/ledger"
 )
+
+// ledgerPath 是这个家的账本：v3.7 起按家命名，<家目录名>-state.json。
+func ledgerPath(root string) string { return (&home.Home{Root: root}).LedgerPath() }
 
 // 工具链自举（D32 / §2.5.1）用的是运行时平台的目录名。
 func toolchainDir() string { return runtime.GOOS + "_" + runtime.GOARCH }
@@ -111,7 +115,7 @@ chmod +x "$home/bin/cot"
 	}
 
 	// 3) 账本只记应用，不记工具链（D34）。
-	led, err := ledger.Load(filepath.Join(root, "state.json"))
+	led, err := ledger.Load(ledgerPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +247,7 @@ func TestInstallRefusesCmdOwnedByAnotherPackage(t *testing.T) {
 	}
 
 	// 账本里还是原来那一个。
-	led, err := ledger.Load(filepath.Join(root, "state.json"))
+	led, err := ledger.Load(ledgerPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}

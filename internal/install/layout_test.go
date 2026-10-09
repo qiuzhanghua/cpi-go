@@ -139,12 +139,14 @@ func TestInstallRefusesToClobberForeignFileInHome(t *testing.T) {
 	}
 }
 
-// 入口名撞上家自己的骨架（bin/、lib/、staging/、state.json）：--force 也不行。
+// 入口名撞上家自己的骨架（bin/、lib/、staging/、账本）：--force 也不行。
 func TestInstallRejectsReservedEntryName(t *testing.T) {
 	homeDir := fakeHome(t)
 	root := installHome(homeDir)
+	// 账本按家命名（v3.7），新旧两个名字都是家的骨架。
+	ledgerName := filepath.Base(root) + "-state.json"
 
-	for _, reserved := range []string{"bin", "lib", "staging", "state.json"} {
+	for _, reserved := range []string{"bin", "lib", "staging", "state.json", ledgerName} {
 		t.Run(reserved, func(t *testing.T) {
 			asm := layoutAssembly(t, "demo", "demo", "exe: "+reserved, reserved)
 			err := Install(asm, Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard, Force: true})

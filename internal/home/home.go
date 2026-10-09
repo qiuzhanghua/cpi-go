@@ -11,8 +11,11 @@
 //	当前目录                 ← 实在没辙
 //
 // v3.5 起没有 `GPM_HOME`：这个家就是工具链自己的家，gpm 的内部结构
-// （bin/、lib/、state.json、staging/）与 cot / tdp 的东西住在同一个目录里。
+// （bin/、lib/、账本、staging/）与 cot / tdp 的东西住在同一个目录里。
 // 因此「卸载 = 删掉一个目录」不再成立：卸载只按账本回放（D34）。
+//
+// v3.7 起账本按家命名：`<家>/<家目录名>-state.json`（`~/cot/cot-state.json`），
+// 不再叫那个放在谁家都通用的 `state.json`。
 package home
 
 import (
@@ -46,7 +49,7 @@ type Home struct {
 // 用户敲的是 `<某个家>/bin/gpm list`，那他要看的就是那个家。环境变量只是
 // 提示，而且很可能是另一个家留下的（比如 shell 里激活着 cot，人却在看
 // 一个不需要工具链的应用）。都推不出来时落到当前目录，骨架就落在
-// ./bin、./lib、./state.json。
+// ./bin、./lib、./<目录名>-state.json。
 func Resolve(dir string) (*Home, error) {
 	root := dir
 	if root == "" {
@@ -173,8 +176,9 @@ func newHome(root string) (*Home, error) {
 // 误当成家目录：
 //  1. 可执行文件所在目录正好叫 bin；
 //  2. 文件名是 gpm（Windows 上 gpm.exe）；
-//  3. 上一级里有账本 state.json —— 那是 gpm 家目录的记号，也是它的骨架
-//     已经建过的证据。
+//  3. 上一级里有账本 —— 那是 gpm 家目录的记号，也是它的骨架已经建过的
+//     证据。账本叫 `<家目录名>-state.json`（v3.7），v3.6 及以前的
+//     `state.json` 也认，好让升级后的第一声 `gpm list` 还能看见老家。
 func RootFromSelf() (string, bool) {
 	exe, err := selfExecutable()
 	if err != nil || exe == "" {
@@ -195,11 +199,21 @@ func RootFromSelf() (string, bool) {
 		return "", false
 	}
 	root := filepath.Dir(binDir)
-	fi, err := os.Stat(filepath.Join(root, "state.json"))
-	if err != nil || fi.IsDir() {
-		return "", false
+	return root, HasLedger(root)
+}
+
+// HasLedger 报告 root 底下有没有 gpm 的账本：先看新名字
+// `<root 的目录名>-state.json`，再认旧的 `state.json`（v3.6 及以前）。
+func HasLedger(root string) bool {
+	for _, p := range []string{
+		filepath.Join(root, filepath.Base(root)+"-"+LedgerSuffix),
+		filepath.Join(root, LegacyLedgerName),
+	} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return true
+		}
 	}
-	return root, true
+	return false
 }
 
 // Bin 是启动器与 gpm 自拷贝所在目录。
@@ -215,14 +229,28 @@ func (h *Home) Staging() string { return filepath.Join(h.Root, "staging") }
 // Log 是日志目录（本版尚未写入，先占位）。
 func (h *Home) Log() string { return filepath.Join(h.Root, "log") }
 
-// LedgerPath 是账本文件。
-func (h *Home) LedgerPath() string { return filepath.Join(h.Root, "state.json") }
+// LedgerSuffix 是账本文件名的后缀：账本按家命名，`<家目录名>-state.json`。
+const LedgerSuffix = "state.json"
+
+// LegacyLedgerName 是 v3.6 及以前那个放在谁家都通用的账本名。
+const LegacyLedgerName = "state.json"
+
+// LedgerPath 是账本文件：`<家>/<家目录名>-state.json`（v3.7）。
+//
+// 按家命名是为了在 `~/cot` 这种与 cot 共用的目录里一眼看出这本账是谁的，
+// 也不至于和 cot 自己可能写的 `state.json` 撞上（DESIGN O16）。
+func (h *Home) LedgerPath() string {
+	return filepath.Join(h.Root, filepath.Base(h.Root)+"-"+LedgerSuffix)
+}
+
+// LegacyLedgerPath 是 v3.6 及以前用的账本位置，只为读旧账与迁移保留。
+func (h *Home) LegacyLedgerPath() string { return filepath.Join(h.Root, LegacyLedgerName) }
 
 // Platform 是包目录名里的平台段，如 darwin_arm64。
 func (h *Home) Platform() string { return h.GOOS + "_" + h.GOARCH }
 
 // AppDir 返回入口在家的落点：v3.6 起 GUI 的实体直接放在家目录下，
-// 跟 bin/、lib/、state.json 平级 —— lib/<id>_<版本>_<平台>/ 那套是
+// 跟 bin/、lib/、账本平级 —— lib/<id>_<版本>_<平台>/ 那套是
 // 命令行插件的位置，GUI 程序不放那儿。
 //
 // top 是入口在 payload/ 根下的顶层名字（"AI Desk.app"、"ai-desk.exe"）。

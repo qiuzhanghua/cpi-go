@@ -3,6 +3,8 @@
 > §1–§2 由我手工填写，一字未改；§3–§8 是讨论后的草稿。全文已落进 [`DESIGN.md`](DESIGN.md) v3.6 并**实现完成**（M10 + M11，`go vet` + `go test ./...` 全绿，本机跑通端到端）；只剩 §7 里三条设计问题跟着 DESIGN 的 O14–O16 走。
 >
 > **v3.6 改了一处落地位置**（用户裁决，DESIGN D35）：GUI 应用的入口落**家目录顶层**（`<根>/AI Desk.app`），不再进 `lib/<id>_<版本>_<平台>/`——那句话原话是"GUI 程序不放到命令行程序中类似的位置"。`payload/` 根下只许有入口一个条目；入口名不许撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）；家里已有别人的同名东西时拒绝、`--force` 才放行。下文凡出现 `lib/<id>_…` 的地方，都已按此改过（历史上 v3.5 是这样，理由见 DESIGN §0.3.6）。
+>
+> **v3.7 给账本改了名字**（用户裁决，DESIGN D36）：`<根>/<家目录名>-state.json`（`~/cot/cot-state.json`）。用户原话是"state.json 和 manifest 一样改名字"——manifest 那份附件用简称，账本这份用家目录名（一个家里可能装好几个应用，用简称会让同一家冒出好几本账）。旧 `state.json` 仍可读、写回时迁移，不需要手工搬；下文凡提账本的地方都已按此改过。
 
 ## 1. 背景与动机
 我已经开发了cot_cli与tdp-cli，都是给程序员用的开发和管理工具。现在要给非开发人员准备带GUI的Desktop工具。
@@ -40,7 +42,7 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 **F7 启动器注入工具链环境**：`<根>/bin/<简称>` 在启动应用前注入工具链环境：按场景 export 自己的家变量（cot 场景 `COT_HOME=<根>`、tdp 场景 `TDP_HOME=<根>`，与 C11 一致 —— 不替 cot 造 `TDP_HOME=${COT_HOME}` 这个兼容值），把 `<根>/bin` 前置到 `PATH`，并在 `<根>/bin/env-cot.vars` 存在时 source 它（只含变量与 PATH，不执行插件 `cmd` 行，与 cot 自己的信任边界一致）。干净机器上该文件里没有插件变量，能保证的就是家变量与 PATH（C4、X2）。Linux 由 exec 继承；Windows 写用户级环境变量；**macOS 上只有"有工具链要注入"（即 `requires` 非空）的包才改用"直接 exec `.../Contents/MacOS/<binary>`"**（决策 ①，理由见 C1；代价是丢 LaunchServices 语义，见 DESIGN R13）；没有 `requires` 时不改道，`activate` 照旧 `exec open … --args`，双击语义不丢。这一条必须真机验证 AI Desk 是否有回归，有回归则升级为 R8 的合成 `.app` 外壳。v1 只保证**命令行启动器**这条路径注入环境，Finder 双击启动的实例不注入（见 X7）。
 
-**F8 落地位置（细化 D21/D24/D35）**：payload 里那**一个**入口 → `<根>/<入口顶层名>`（macOS 就是 `<根>/AI Desk.app`，与 `bin/`、`lib/`、`state.json` 平级；v3.6 以前是 `<根>/lib/<id>_<version>_<os>_<arch>/`）；macOS 入口以 `.app` 落地；简称启动器 → `<根>/bin/<cmd>`；图形入口软链 → `~/Applications/<name>.app`。**不存在"GUI 程序装进 bin/"的形态**；`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（cot 在用）。
+**F8 落地位置（细化 D21/D24/D35）**：payload 里那**一个**入口 → `<根>/<入口顶层名>`（macOS 就是 `<根>/AI Desk.app`，与 `bin/`、`lib/`、账本平级；v3.6 以前是 `<根>/lib/<id>_<version>_<os>_<arch>/`）；macOS 入口以 `.app` 落地；简称启动器 → `<根>/bin/<cmd>`；图形入口软链 → `~/Applications/<name>.app`。**不存在"GUI 程序装进 bin/"的形态**；`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（cot 在用）。
 
 **F9 归属与卸载边界（细化 D28）**：gpm 只回放自己写的东西（自己的入口——v3.6 起是 `<根>/<入口顶层名>`，v3.5 是 `lib/` 下自己的目录——、`bin/<cmd>`、软链、rc 里的 `# >>> gpm >>>` 块）。`<根>/bin/cot`、`env-cot*`、`lib/` 下 cot 自己的包都不在账本里，`gpm uninstall` 一律不碰；`~/cot` 目录本身也不删。
 
@@ -77,9 +79,9 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **C4** `cot i -s` 只装 cot 自身 + activate 框架，**不装任何插件**。
 - **C5** 已装版本 ≥ 自带版本时 `do_upgrade` 打印 already-latest 并返回 Ok（exit 0）；`--force` 才覆盖。
 - **C6** Windows 上把 exe 拷进 `%COT_HOME%\bin\cot.exe` 时 `CopyFileEx` 可能被拒（源码注释记录实测 `os error 5`），实现必须走"临时文件 + 改名"回退。
-- **C7 根就是 `$COT_HOME` / `$TDP_HOME`**：因此 `<根>/bin` 就是 `~/cot/bin`，里面同时住着 `cot`、`tdp`、`gpm`（D29 自装）与 `<简称>` 启动器；PATH 只需一条；`RootFromSelf()` 的三条判据（目录叫 bin、文件叫 gpm、上一级有 state.json）在此仍然成立。
+- **C7 根就是 `$COT_HOME` / `$TDP_HOME`**：因此 `<根>/bin` 就是 `~/cot/bin`，里面同时住着 `cot`、`tdp`、`gpm`（D29 自装）与 `<简称>` 启动器；PATH 只需一条；`RootFromSelf()` 的三条判据（目录叫 bin、文件叫 gpm、上一级有账本——v3.7 的 `<家目录名>-state.json`，v3.6 及以前的 `state.json` 也认）在此仍然成立。
 - **C8** `ac` 已被占用：`/usr/sbin/ac`（macOS 登录记账）。
-- **C9** 账本 `state.json` 字段固定为 `schemaVersion` / `self` / `packages[…]`，卸载靠它回放（D28）；它落在 `<根>/state.json`（`~/cot` 下目前没有这个文件，由 gpm 新建）。
+- **C9** 账本字段固定为 `schemaVersion` / `self` / `packages[…]`，卸载靠它回放（D28）；**v3.7 起它落在 `<根>/<家目录名>-state.json`**（`~/cot/cot-state.json`、`~/Library/Application Support/ad/ad-state.json`）。v3.6 及以前的 `<根>/state.json` 仍可读，写回时迁到新名字并删掉旧文件（D36）。
 - **C10** 不得依赖网络（N1）。
 - **C11** 本机 `~/cot/bin/activate` 里 `TDP_HOME=${COT_HOME}` 是**兼容性**设置（用户明确），不是"tdp 的家"：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（默认 `~/tdp`），启动器注入环境时照此办理（F7）。
 
@@ -91,14 +93,15 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **7-2（阻塞 F5 验收）**"已装好则跳过"的判定：**已按"不发明判据"实现**——一律调 `cot i -s <根>`，由 cot 自己的版本比较决定（F5、C5）。剩下的设计问题是：要不要在跳过时给用户一行"用了哪一份 cot（版本）"，见 DESIGN O14。
 - **7-3**"不继续"时回滚的范围：**已按"全部回滚、不留半成品"实现**（工具链失败 → 逆序回滚 + 收回本次新建的空家）。剩下的设计问题是超出本次安装范围的东西要不要也更着撤（DESIGN O15）。
 - ~~**7-4** 撞名简称（`ac`）怎么处理：拒绝安装 / 自动改名 / 仅警告？~~ **已定（用户）**：`ac` 只是举例、不单独裁决；重名一律报错拒绝、`--force` 才覆盖（F10，DESIGN FR-21、R4、O3 关闭）。
-- **7-5** `<根>/state.json` 与 cot 共享 `~/cot` 目录：是否需要给账本改名或加锁（同一目录下 cot 也会写很多文件）？见 DESIGN O16。
+- **7-5** ~~`<根>/state.json` 与 cot 共享 `~/cot` 目录：是否需要给账本改名或加锁？~~ **改名部分已决**（v3.7、D36）：账本按家命名 `<根>/<家目录名>-state.json`，不再用放之四海皆可的 `state.json`；**加锁仍未决**，见 DESIGN O14–O16。
 
 ## 8. 验收标准
 
 - **A1** 干净机器 + 断网 + `./install.sh`：`command -v cot` 有输出；`~/cot/bin/cot --version` 可运行；`command -v ad` 有输出；`~/Applications/AI Desk.app` 存在；**`~/cot/AI Desk.app` 存在**（v3.6；不再有 `~/cot/lib/ai-desk_0.2.0_darwin_arm64/`）。
 - **A2** `~/.zprofile`、`~/.zshrc`、`~/.profile` 各恰有一个 `# >>> gpm >>>` 块，块内含 `$HOME/cot/bin`（或等价绝对路径）。
-- **A3** 幂等：连跑两次 install.sh，上述三个 rc 文件、`~/cot/bin/ad`、软链、`state.json` 的 packages 段不变。
-- **A4** `gpm list` 含 ai-desk；账本 entry 指向 `.app`、`cmd=ad`、`verified=true`。
+- **A3** 幂等：连跑两次 install.sh，上述三个 rc 文件、`~/cot/bin/ad`、软链、账本（`~/cot/cot-state.json`）的 packages 段不变。
+- **A4** `gpm list` 含 ai-desk；账本（`<根>/<家目录名>-state.json`）entry 指向 `.app`、`cmd=ad`、`verified=true`。
+- **A18** 账本改名与迁移（v3.7）：装完账本是 `<根>/<家目录名>-state.json`；把账本手工改回旧名 `state.json` 后 `gpm list` 仍认得这个家、也读得到里面的包，再 `gpm uninstall` 一次 → 新名字写出来、旧文件消失（`internal/ledger/ledger_test.go` 四条用例 + 真机验证见 DESIGN §3）。
 - **A5** 跳过：预置一个可用的 `~/cot`（含 `env-cot` 等资产）后再装：`~/cot/bin/cot` 的 mtime 不变，安装仍成功（exit 0）。
 - **A6** 原子性：把 zip 里的 cot 换成不可执行的坏文件后跑 install.sh：退出码非 0；`~/cot/bin/ad`、`~/Applications/AI Desk.app`、rc 里的 `# >>> gpm >>>` 块、账本里的该包**都不存在**。
 - **A7** 许可降级：对 PATH 集成回答"拒绝"：安装成功；rc 文件字节不变；`gpm list` 有该包；安装输出里给出了手动 `export PATH=…` 的办法（`gpm env` 也能打印同一行）。
@@ -110,4 +113,4 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **A13** 干净机器上装完，`~/cot/lib` 里**没有**任何 cot 插件目录，也**没有** `ai-desk_*`（v3.6：GUI 应用落在家目录顶层）；`cot list` 为空。
 - **A14** 清理旧 `~/ad` 后：三份 rc 里不再有 `$HOME/ad/bin` 的 gpm 块，`~/ad` 目录被删除，`~/ad/state.json` 不存在；若已在 `~/cot` 下重装，`command -v ad` 仍能通过新启动器找到。
   - 本机已于 2026-10-09 执行完毕：`~/ad/bin/gpm uninstall ai-desk`（旧 v34 回放）→ `rm -rf ~/ad`。实测输出为 6 条删除 + 3 条"已摘除 PATH 标记块"，`~/Applications/AI Desk.app` 软链一并消失；三份 rc 里 gpm 行数归 0，`~/.zshrc:141` 摘块留下的 3 个连续空行已收敛为 1；`alias c` 与 token 导出未受影响。
-- **A17** 入口落点与三道闸（v3.6）：装完 `<根>/AI Desk.app` 存在且 `<根>/lib` 下没有 `ai-desk_*`；`payload/` 根下多放一个文件 → 安装报错且不留痕；家里先手工放一个非 gpm 的 `~/cot/ad` → 报错、`--force` 才覆盖；`entry` 名字取 `bin` / `lib` / `staging` / `state.json` → 即使 `--force` 也拒（`internal/install/layout_test.go` 四条用例）。
+- **A17** 入口落点与三道闸（v3.6）：装完 `<根>/AI Desk.app` 存在且 `<根>/lib` 下没有 `ai-desk_*`；`payload/` 根下多放一个文件 → 安装报错且不留痕；家里先手工放一个非 gpm 的 `~/cot/ad` → 报错、`--force` 才覆盖；`entry` 名字取 `bin` / `lib` / `staging` / 账本名（`cot-state.json`，以及还没迁移的旧名 `state.json`）→ 即使 `--force` 也拒（`internal/install/layout_test.go` 四条用例）。

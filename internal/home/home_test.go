@@ -249,7 +249,7 @@ func stubSelf(t *testing.T, exe string, err error) {
 	t.Cleanup(func() { selfExecutable = old })
 }
 
-// fakeRoot 造一个"家目录已经建好"的样子：bin/gpm 与 state.json。
+// fakeRoot 造一个"家目录已经建好"的样子：bin/gpm 与账本（<家目录名>-state.json）。
 func fakeRoot(t *testing.T, exeName string) (root string, exe string) {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir()) // macOS 的 /var → /private/var
@@ -263,7 +263,7 @@ func fakeRoot(t *testing.T, exeName string) (root string, exe string) {
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(`{"packages":[]}`), 0o644); err != nil {
+	if err := os.WriteFile((&Home{Root: root}).LedgerPath(), []byte(`{"packages":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root, exe
@@ -372,7 +372,7 @@ func TestRootFromSelfRejectsLookalikes(t *testing.T) {
 
 	// 这条是给 /usr/local/bin/gpm 这类地方准备的：目录确实叫 bin，
 	// 但上一级没有 gpm 的账本 —— 那不是它的家。
-	t.Run("上一级没有 state.json", func(t *testing.T) {
+	t.Run("上一级没有账本", func(t *testing.T) {
 		tmp := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(tmp, "bin"), 0o755); err != nil {
 			t.Fatal(err)
@@ -384,6 +384,32 @@ func TestRootFromSelfRejectsLookalikes(t *testing.T) {
 		stubSelf(t, exe, nil)
 		if _, ok := RootFromSelf(); ok {
 			t.Fatal("没有账本的地方不该被当成家目录")
+		}
+	})
+
+	// 升级路径：v3.6 及以前的家只有 state.json，第一声 gpm list 还得认出它。
+	t.Run("上一级只有旧账本 state.json", func(t *testing.T) {
+		tmp := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+			tmp = resolved // macOS 的 /var → /private/var
+		}
+		if err := os.MkdirAll(filepath.Join(tmp, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		exe := filepath.Join(tmp, "bin", "gpm")
+		if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmp, "state.json"), []byte(`{"packages":[]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stubSelf(t, exe, nil)
+		root, ok := RootFromSelf()
+		if !ok {
+			t.Fatal("旧账本也说明这里是 gpm 的家")
+		}
+		if root != tmp {
+			t.Fatalf("Root = %q，想要 %q", root, tmp)
 		}
 	})
 
@@ -408,7 +434,8 @@ func TestHomeLayout(t *testing.T) {
 		{"Bin", h.Bin(), filepath.Join(root, "bin")},
 		{"Lib", h.Lib(), filepath.Join(root, "lib")},
 		{"Staging", h.Staging(), filepath.Join(root, "staging")},
-		{"LedgerPath", h.LedgerPath(), filepath.Join(root, "state.json")},
+		{"LedgerPath", h.LedgerPath(), filepath.Join(root, filepath.Base(root)+"-state.json")},
+		{"LegacyLedgerPath", h.LegacyLedgerPath(), filepath.Join(root, "state.json")},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %q，想要 %q", c.name, c.got, c.want)
