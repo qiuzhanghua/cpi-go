@@ -16,6 +16,29 @@ func clearToolchainEnv(t *testing.T) {
 	t.Setenv("TDP_HOME", "")
 }
 
+// 卸载最后一个包时靠这个判断"这个家是不是归工具链管"。
+func TestActiveToolchainEnv(t *testing.T) {
+	clearToolchainEnv(t)
+	if name, val, ok := ActiveToolchainEnv(); ok {
+		t.Fatalf("两个变量都空却报有：%q %q", name, val)
+	}
+
+	t.Setenv("TDP_HOME", "/tmp/tdp-home")
+	if name, val, ok := ActiveToolchainEnv(); !ok || name != "TDP_HOME" || val != "/tmp/tdp-home" {
+		t.Fatalf("拿到 %q=%q ok=%v，想要 TDP_HOME=/tmp/tdp-home true", name, val, ok)
+	}
+
+	t.Setenv("COT_HOME", "  /tmp/cot-home  ")
+	if name, val, ok := ActiveToolchainEnv(); !ok || name != "COT_HOME" || val != "/tmp/cot-home" {
+		t.Fatalf("拿到 %q=%q ok=%v，想要 COT_HOME=/tmp/cot-home true（前后空白要 trim）", name, val, ok)
+	}
+
+	t.Setenv("COT_HOME", "   ")
+	if name, val, ok := ActiveToolchainEnv(); !ok || name != "TDP_HOME" {
+		t.Fatalf("全是空白该轮到 TDP_HOME，拿到 %q=%q ok=%v", name, val, ok)
+	}
+}
+
 // Resolve 的优先级：--dir > 从自己的位置推断 > $COT_HOME > $TDP_HOME > 当前目录。
 func TestResolvePriority(t *testing.T) {
 	wd, err := os.Getwd()

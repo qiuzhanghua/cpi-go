@@ -35,7 +35,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | **D26** | **PATH 集成**：把家下面的 `bin/` 接进 PATH——`cot`、`tdp`、`gpm` 与各个 `<简称>` 都住在那里，所以一个块一条就够。按 `$SHELL` 决定落点，写幂等标记块，**写之前必须用人话请求许可**，拒绝则功能降级而非失败。 | 沿用 D7；v3.5 明确"工具链也走同一个块" |
 | **D27** | **gpm 不吃 `.dmg` / NSIS `.exe` / AppImage 安装器**，只吃已经摆成 `payload/` 形状的归档。理由见 §2.12。 | 本项目 |
 | **D28** | **账本 `state.json` 是所有外部副作用（PATH 块、`~/Applications` 链接、`.desktop`）的唯一真相**，卸载即回放删除。**边界见 D34**：只回放 gpm 自己写下的东西，工具链的资产不记账也不删。 | 沿用 D8 + v3.5 |
-| **D29** | **gpm 把自己也装进 `<家>/bin/gpm`**，保证装完之后 `gpm list` / `gpm uninstall` 还找得到它；卸载时一并删掉（仅当账本里已经没有别的包）。**那儿已经有一个 gpm 就不装、不覆盖**（那属于用户，卸载时也不删它）——否则拿旧包安装会把新版 gpm 静默降级。 | 本项目 |
+| **D29** | **gpm 把自己也装进 `<家>/bin/gpm`**，保证装完之后 `gpm list` / `gpm uninstall` 还找得到它；卸载时一并删掉（仅当账本里已经没有别的包，**且环境里没有 `COT_HOME` / `TDP_HOME`**——有值说明这个 shell 正站在工具链的家里，那份 gpm 留着，见 §2.9）。**那儿已经有一个 gpm 就不装、不覆盖**（那属于用户，不记进账本、卸载时也不删它）——否则拿旧包安装会把新版 gpm 静默降级。 | 本项目 |
 | **D30** | **单版本覆盖式**：同一个 `id` 再装一次，先删旧的包目录与启动器再装新的，不做多版本共存。 | 沿用 D10 |
 | **D31** | **动手之前先查那个应用在不在跑**：覆盖安装与卸载都在删东西之前 `proc.Find` 一次；在跑就用人话说明后果并**拒绝**，只有显式给 `--force` 才继续。查不出来（平台不支持 / 没权限）**不拦**，只打印一行提示。 | 本项目。见 §2.9、§3 |
 | **D32** | **工具链自举由安装器编排，zip 自带、完全离线**：清单声明 `requires: [cot]`（或 `tdp`）时，install.sh 先跑 zip 里的 `tools/<os>_<arch>/cot`：`cot i -s "${COT_HOME:-$HOME/cot}"`（tdp 按 `$TDP_HOME`）。gpm 不下载、不查版本、不代装插件；那一步失败就**不继续**（FR-20）。 | v3.5，本项目 |
@@ -113,6 +113,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | 归属边界写进决策（D34） | 见 §2.9、F9。同一个家里有两种东西：gpm 装的 GUI 应用与 cot 装的工具链。账本只能回放自己写下的东西——否则"卸载一个 GUI 应用"会把用户的 go / java 一起删掉 |
 | 启动器重名检查：**已知缺口**（R4）→ **需求**（FR-21） | 见 §2.8。工具链的家与用户自己的 `bin/` 合流之后，`<家>/bin` 里撞名的机会变多，静默覆盖的代价变大 |
 | `~/ad`：AI Desk 的默认根 → **普通用户数据，文档与默认值不再引用**；本机已用旧 gpm 的账本回放清理（§3） | 见 §2.17。它是改名前的遗留：`--default-dir` 该烘的是工具链的家（`~/cot`），不是某个应用的缩写 |
+| 卸载自装的那份 `<家>/bin/gpm`：**一律删**（只要账本空了）→ **环境里有 `COT_HOME` / `TDP_HOME` 就留着** | 见 D29 修订、§2.9。用户裁决：在一个激活过的 shell 里敲 `uninstall`，这个家归 cot/tdp 管，`<家>/bin/gpm` 很可能就是手上正在敲的那一个，不该被卸载顺手拿走（原话："卸载的时候如果有环境变量 COT_HOME/TDP_HOME 则不删除"）；顺带把 §2.8 那句"已经有一个 gpm……卸载时也不会删它"改成只说这次没覆盖——账本里的 `self` 若是更早那次安装记下的，卸载仍会按账本处理 |
 
 **未定**：工具链"已装好"怎么判、失败回滚到哪一步、账本与 cot 共处一室的加锁——三条还在 [`REQUIREMENTS.md`](REQUIREMENTS.md) §7，本文以 O14–O16 跟踪。**已定**（用户裁决）：`requires` 为空时用简称、缺省装到平台数据目录（D21，O12 关闭）；`ac` 只是举例、不单独裁决，重名一律按 FR-21 拒绝（O13 关闭）。
 
@@ -517,11 +518,14 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
   ├ POSIX   → 逐文件摘掉标记块
   ├ Windows → 从 HKCU\Environment 的 Path 里只摘掉那一条（其余逐字节不动）
   └ 我们自己创建出来的空 shell 配置文件也一并删掉（账本 pathEdits[].created）
-删 bin/gpm                                 ← 账本 self（仅当账本里已经没有别的包）
+删 bin/gpm                                 ← 账本 self（仅当账本里已经没有别的包，
+                                              且环境里没有 COT_HOME / TDP_HOME）
 写回 state.json（去掉该包）
 ```
 
-**验收标准（可测）**：`gpm list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 gpm 标记块（Windows 上是注册表 PATH 里没有 `<家>\bin`）；如果那个文件是 gpm 创建出来的且已经空了，文件本身也不在。
+**自装的那份 gpm 什么时候留着**：`COT_HOME` / `TDP_HOME` 只要有一个有值（用户在一个**激活过的 shell** 里敲的 `uninstall`），就说明这个家归 cot/tdp 管、`<家>/bin/gpm` 很可能正是他手上敲的那一个，于是**不删**，只打印一行说明；账本里的 `self` 字段也留着。想删就先 `unset` 再卸，或者直接 `rm`（`home.ActiveToolchainEnv()`）。
+
+**验收标准（可测）**：`gpm list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 gpm 标记块（Windows 上是注册表 PATH 里没有 `<家>\bin`）；如果那个文件是 gpm 创建出来的且已经空了，文件本身也不在；账本空了且环境里没有 `COT_HOME` / `TDP_HOME` 时 `<家>/bin/gpm` 也不在（有值时它留着，见上）。
 
 `<家>` 目录**不删**——用户可能往里放了别的东西，删掉是越界。命令会明说"目录还在"。
 
@@ -778,7 +782,7 @@ exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}"
 |---|---|---|
 | `install.sh` / `install.cmd` | 用户双击、或解压后在终端里跑一次 | 只做三件事：切到自己的目录、补 `+x`、把活交给 `./gpm` |
 | 包里的 `./gpm` | 被 `install.sh` 调这一次 | **用户机器上事先不需要有 gpm**——这就是 D20"zip 自带 gpm"的全部意思 |
-| `<家>/bin/gpm` | 用户之后敲 `gpm list` / `gpm where` / `gpm uninstall` | 装的时候把自己拷过去的那一份（D29）。那儿本来就有 gpm 则**不覆盖**，也不计入账本 |
+| `<家>/bin/gpm` | 用户之后敲 `gpm list` / `gpm where` / `gpm uninstall` | 装的时候把自己拷过去的那一份（D29）。那儿本来就有 gpm 则**不覆盖**，也不计入账本；卸载到最后一个包时删掉，但环境里有 `COT_HOME` / `TDP_HOME` 就留着 |
 | `<家>/bin/<cmd>` 终端启动器 | 用户在终端敲应用名（`ad movie.mp4`） | 先注入工具链环境（D33），再直接 exec 内层可执行文件（v3.5 起 macOS 不再用 `open`，因为它不给环境） |
 | `~/Applications/<Name>.app`（macOS） | 用户点图标、Spotlight、启动台 | 它是指向 `<家>/lib/<id>_<ver>_<os>_<arch>/<Name>.app` 的**符号链接**，不是拷贝 |
 | `.desktop`（Linux）/ 开始菜单 `.lnk`（Windows） | 桌面菜单 | Linux 的 `Exec=` 指向启动器；Windows 的 `.lnk` 指向应用本体（§2.7） |
@@ -817,7 +821,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | Windows PATH | 纯函数表驱动（展开 `%VAR%`、判重、只摘自己那一条）+ **往返逐字节保真**；真注册表往返由 CI 的 windows job 跑 | `internal/integrate` |
 | Windows `.lnk` | 写进去再读回来，比对 Target/Arguments/WorkingDir/Description；已有同名不覆盖 | `internal/integrate`（windows） |
 | Linux `.desktop` | 字段齐全、`Exec=` 指向启动器、遵守 `$XDG_DATA_HOME`；有 `desktop-file-validate` 就过一遍 | `internal/integrate`（linux） |
-| 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失 | e2e |
+| 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失（自装的那份 `bin/gpm` 只在环境里没有 `COT_HOME` / `TDP_HOME` 时才跟着走） | e2e |
 | 运行中检查 | 纯函数表驱动：`/a/b` 不匹配 `/a/bc`、只认路径边界、`" (deleted)"` 幽灵照认、符号链接两种写法都收、空 `dir` 不匹配任何东西；darwin 的 `pgrep` 模式**恰好**锚在 argv[0]；Linux 用假 `/proc` 造四种 pid（正主 / 只有 argv[0] 的 AppImage / 幽灵 / 无关）；真起一个进程、**把它删掉**，断言仍认得出 | `internal/proc`（三平台） |
 | 拦截语义 | 隔离 `HOME` 后真装一次、真把假应用跑起来，再装第二次 → 必须拒绝且**账本与包目录一个字没动**；`--force` → 放行且有警告；卸载同理；应用不在跑时不许误拦 | `internal/install` |
 | 安装根与 `--default-dir` | `home.Resolve` / `home.ResolveInstall` 的五档优先级（`--dir` > **按 `requires` 取的家** > **从自己的位置推断** > **平台数据目录/<简称>** > 当前目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有 `state.json` / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`，没给 `--default-dir` 时脚本干脆**不传 `--dir`**（交给 gpm 按上面那条链自己定）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |

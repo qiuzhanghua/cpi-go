@@ -240,7 +240,7 @@ func Install(src string, opt Options) error {
 		fmt.Fprintf(out, "提示：没能把 gpm 自己拷进 %s：%v\n", h.Bin(), err)
 	}
 	if keptOld {
-		fmt.Fprintf(out, "提示：%s 已经有一个 gpm，这次没覆盖它（卸载时也不会删它）。\n", self)
+		fmt.Fprintf(out, "提示：%s 已经有一个 gpm，这次没覆盖它。\n", self)
 	}
 
 	led.Put(ledger.Package{
@@ -435,8 +435,15 @@ func Uninstall(dir, id string, force bool, out io.Writer) error {
 	if err := remove(h, led, id, out); err != nil {
 		return err
 	}
+	// 账本里记着的那份 gpm，只有在这个家是 gpm 自己的时候才删。当前
+	// shell 要是已经站在某家工具链里（COT_HOME / TDP_HOME 有值），
+	// 这个家就归 cot/tdp 管，那份 gpm 留着 —— 它很可能就是用户手上
+	// 正在敲的那一个。想删就先 unset 再卸，或者直接 rm。
 	if len(led.Packages) == 0 && led.Self != "" {
-		if err := os.Remove(led.Self); err == nil {
+		if name, val, ok := home.ActiveToolchainEnv(); ok {
+			fmt.Fprintf(out, "保留 %s：环境里 %s=%s，这个家归工具链管，gpm 自己这一份不删。\n",
+				led.Self, name, val)
+		} else if err := os.Remove(led.Self); err == nil {
 			fmt.Fprintf(out, "已删除 %s\n", led.Self)
 			led.Self = ""
 		}

@@ -108,6 +108,24 @@ func RequireHome(req string) string {
 	return ""
 }
 
+// ToolchainEnvNames 是"这个 shell 已经站在某家工具链里"的环境变量名。
+//
+// 卸载最后一个包时看的就是它们：有值说明用户是在激活过的 shell 里敲的
+// 命令，那个家归 cot/tdp 管，不是 gpm 的私产 —— 里面的 <家>/bin/gpm
+// 留着不删（D29 修订）。
+var ToolchainEnvNames = []string{"COT_HOME", "TDP_HOME"}
+
+// ActiveToolchainEnv 回报当前环境里第一个有值的工具链家变量。
+// 空白不算有值；名字与值都 trim 过。
+func ActiveToolchainEnv() (name, value string, ok bool) {
+	for _, n := range ToolchainEnvNames {
+		if v := strings.TrimSpace(getenv(n)); v != "" {
+			return n, v, true
+		}
+	}
+	return "", "", false
+}
+
 // PlatformDataDir 返回本平台放"用户级程序数据"的地方。
 //
 //	macOS   ~/Library/Application Support

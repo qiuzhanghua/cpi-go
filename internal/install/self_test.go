@@ -1,8 +1,10 @@
 package install
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -180,5 +182,72 @@ func TestInstallKeepsForeignGpmOutOfLedger(t *testing.T) {
 	}
 	if b, err := os.ReadFile(dest); err != nil || string(b) != sentinel {
 		t.Fatalf("卸载把用户自己的 gpm 删了/改了：%q %v", b, err)
+	}
+}
+
+// installDemo 在临时 HOME 里装一个 demo，返回安装根（顺带清掉工具链变量）。
+func installDemo(t *testing.T) string {
+	t.Helper()
+	fakeHome(t)
+	root := t.TempDir()
+	if err := Install(assembly(t), Options{Dir: root, Yes: true, NoPath: true, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// 卸载最后一个包时，当前 shell 已经站在某家工具链里（COT_HOME /
+// TDP_HOME 有值）：那个家归 cot/tdp 管，账本里那份 gpm 留着不删。
+func TestUninstallKeepsSelfWhenToolchainEnvSet(t *testing.T) {
+	root := installDemo(t)
+	h, err := home.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Join(h.Bin(), selfName())
+	if _, err := os.Stat(self); err != nil {
+		t.Fatalf("装完没有 %s：%v", self, err)
+	}
+
+	t.Setenv("TDP_HOME", filepath.Join(t.TempDir(), "tdp"))
+	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(self); err != nil {
+		t.Fatalf("环境里有 TDP_HOME，卸载却把 %s 删了：%v", self, err)
+	}
+	led, err := ledger.Load(h.LedgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(led.Packages) != 0 {
+		t.Fatalf("包该卸干净了：%+v", led.Packages)
+	}
+	if led.Self != self {
+		t.Fatalf("账本 Self = %q，想要留着 %q", led.Self, self)
+	}
+}
+
+// 没有那两个变量时，最后一份 gpm 照旧跟着卸载走。
+func TestUninstallRemovesSelfWithoutToolchainEnv(t *testing.T) {
+	root := installDemo(t)
+	h, err := home.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Join(h.Bin(), selfName())
+
+	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(self); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("卸载后 %s 该没了，Stat 给 %v", self, err)
+	}
+	led, err := ledger.Load(h.LedgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if led.Self != "" {
+		t.Fatalf("账本 Self = %q，想要空", led.Self)
 	}
 }
