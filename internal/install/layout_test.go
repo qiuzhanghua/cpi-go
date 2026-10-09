@@ -66,6 +66,11 @@ func TestInstallLandsAppInTheHome(t *testing.T) {
 	} else if len(items) != 0 {
 		t.Errorf("lib/ 该是空的（那是命令行插件的位置），现在有 %d 项", len(items))
 	}
+	// staging/ 是解包的中转场地：装完它里外都该是空的，连着这一层一起收掉，
+	// 免得每个家目录顶层都留一个看不懂的空目录（v3.10）。
+	if _, err := os.Stat(h.Staging()); !os.IsNotExist(err) {
+		t.Errorf("装完不该留下空的 staging/：%v", err)
+	}
 
 	led, err := ledger.Load(h.LedgerPath())
 	if err != nil {
@@ -108,6 +113,11 @@ func TestInstallRejectsPayloadWithSiblings(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "demo")); !os.IsNotExist(err) {
 		t.Errorf("被拦下之后不该留下东西：%v", err)
+	}
+	// 失败路径同样不该留 staging/：入口还没落盘就被拦下了，中转场地是唯一
+	// 被建出来的东西，收不回去就成了一份"看着像安装失败的残骸"。
+	if _, err := os.Stat(filepath.Join(root, "staging")); !os.IsNotExist(err) {
+		t.Errorf("被拦下之后不该留下 staging/：%v", err)
 	}
 }
 

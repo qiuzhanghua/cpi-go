@@ -1,4 +1,4 @@
-# gpm — GUI Package Manager 设计文档（v3.9）
+# gpm — GUI Package Manager 设计文档（v3.10）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -8,6 +8,8 @@ v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**一次装
 **v3.3 改的是名字与"装到哪儿"**：产品从 `cpi` 改名 **gpm（GUI Package Manager）**；`~/ad` 这个硬编码的安装根被删掉——**装到哪儿是打包方/安装器的决定**（`gpm pack --default-dir` 把它烘进 `install.sh`/`install.cmd`，AI Desk 用的是 `~/ad`），gpm 自己只认 `--dir` > `$GPM_HOME` > 当前目录。顺带补掉一处真实风险：`<bin>/gpm` 已经存在时不再覆盖（原来拿旧包安装会把新版 gpm 悄悄降级）。名字的由来、以及"为什么叫 manager 不算撒谎"见 §0.5。
 
 **v3.4 补的是 v3.3 留下的那个洞（O11）**：删掉 `~/ad` 之后，用户在新终端里敲 `gpm list` 会落到**当前目录**——因为 `GPM_HOME` 只活在 `install.sh` 那一行里，shell 里并没有它。按用户给的布局原则（**带 GUI 的应用放在指定的目录下；没有图形界面的小东西放在它下面的 `bin/`；gpm 自己也一样**），`<家目录>/bin/gpm` 这个位置本身就把家目录说出来了，于是优先级在 `$GPM_HOME` 与"当前目录"之间补了一档 `RootFromSelf()`：**从 gpm 自己在哪儿推断**。不需要新状态、也不需要 shell 帮忙记（见 D21、§2.3、§0.3.4）。
+
+**v3.10 让安装器自己把下载标记擦掉。** zip 只要过一遍浏览器或邮件，里面每个文件都会带上 `com.apple.quarantine`；带标记又没有 Developer ID 签名的 `.app`，双击会被 Gatekeeper 直接拒掉（`open` 返回 `-128`）。R1 原先的裁决是"内网过渡期只在文档里教用户处理，安装器**不许**碰它"。这一版把它反过来了：入口拷进家目录之后跑一次 `xattr -dr`（递归，`.app` 里每个文件各带一份标记），**推翻**那句禁令——理由是包本来就是用户自己解压、自己跑 `install.sh` 装的，这个动作已经表达了安装意图；而让当前行为成立的其实是"`stage.CopyTree` 逐字节写文件、碰巧不搬扩展属性"这个实现细节，不是契约。清不掉**不判定安装失败**（只打印一行可照抄的提示）：R1 的正解仍然是签名 + 公证，这一步只是内网过渡期的兜底。见 §0.3.10、D40、FR-28、R18。
 
 **v3.9 给卸载补上一道"你确定吗"。** 用户的原话是"给 uninstall 也加个 --yes（与 install 对齐）"——可 uninstall 在此之前**一句话都不问**（全仓唯一会询问的地方是 install 的 PATH 集成，§2.6）。于是照"与 install 对齐"的字面意思做成两件事：交互终端里先把**这次要删的东西逐条摊开**（入口、启动器、图形入口、PATH 块，全部取自账本），得到 `[y/N]` 才动手；**不是交互终端（脚本、管道、CI）时不给 `--yes` 就什么都不删**，退出来打印一行可照抄的 `gpm uninstall <id> --yes`。**拒绝不算失败**（退出码 `0`，与 install 放弃写 PATH 同口径）。理由、清单来源与三种输入的出口见 §0.3.9、D39、§2.9.2。
 
@@ -54,6 +56,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | **D37** | **工具链已经装好就跳过**：`requires` 指定的那家，`<家>/bin/{cot,tdp}`（Windows 加 `.exe`）已经是一个文件时，**不跑包里自带的那一份**，只打印一行"已经装好 …，跳过"；`--force` 才照包里那份重铺。**只查"在不在"，不做版本比较**——清单里没有版本约束字段，那台机器上的工具链归用户 / cot 自己管（要不要能写版本约束见 O17）。这与 PATH 集成无关：rc 里没块就补块（D26）。 | v3.8，本项目。用户原话见 `REQUIREMENTS.md` §7-1 |
 | **D38** | **账本写回之前比对原文**（乐观并发检查，不引锁文件）：`ledger.Load` 记下真正读到的路径与字节，`Save` 之前比一次——文件被改过 / 被挪走 / 这次操作期间被别人建了出来，就报错"…在这次操作期间被别的 gpm 改过，请重跑一次"，让这次操作失败回滚，**绝不覆盖别人的账目**。 | v3.8，本项目。用户问"账本还需要加锁吗"，答：命名（D36）解决归属与撞名，不解决并发写；不引锁，改用原文比对 |
 | **D39** | **卸载之前先问一句**：`gpm uninstall <id>` 在交互终端上把这次要删的东西**逐条摊开**（入口 / 启动器 / 图形入口 / PATH 标记块，全部取自账本）再问 `[y/N]`；`--yes` 跳过询问；**不是交互终端又没有 `--yes` 就什么都不删**，打印一行可照抄的提示。**拒绝 = 退出码 0**（与 install 放弃 PATH 集成同口径）：没删东西不是错误。 | v3.9，本项目。用户原话："给 uninstall 也加个 --yes（与 install 对齐）"——此前 uninstall **从不询问**，所以这是新加的一道闸，不是给旧提示补个开关 |
+| **D40** | **安装器落地应用后清掉下载标记**（macOS 的 `com.apple.quarantine`）：入口拷进 `<家>/<入口顶层名>` 之后跑一次 `xattr -dr com.apple.quarantine <入口>`，**递归**清（`.app` 里的每个文件各带一份标记），非 macOS 平台空转。**清不掉不判定安装失败**，只打印一行提示。**这推翻了 R1 原先"安装器不许碰它"的裁决**（见 R18）。 | v3.10，本项目。用户原话："gpm 里显式清 xattr 的改动做了"；直接推翻的是本仓 R1 表里那句"不要把 `xattr -dr com.apple.quarantine` 写进 `install.sh`" |
 
 ### 0.2 由上述决策推导出的硬性设计约束
 
@@ -166,6 +169,16 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | 清单取自**账本**，不扫目录 | 与 D28 / D34 同源：摊开的每一项（入口、启动器、图形入口、PATH 块）都是账本里登记过的外部副作用，所以这张单子**就是**回放清单，不多一项也不少一项。工具链的 `bin/cot`、`env-cot*`、`lib/` 插件压根不在账本里，永远不会出现在上面（D34） |
 | 非交互终端**默认什么都不删**，除非显式 `--yes`；拒绝仍然退出 `0` | 脚本里最危险的是"以为自己在自动化，其实删错了家"（`--dir` 忘了给、`HOME` 不对）。默认拒绝之后，忘记给 `--yes` 的脚本第一次跑就会**看得见**地停下，而不是安静地删掉东西。用 `0` 退出是刻意的——用户不同意 ≠ gpm 出错（FR-27、R17） |
 
+### 0.3.10 v3.9 → v3.10 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| 安装流水线第 4 步在"拷进入口"之后**多了一步**：清掉带过来的 `com.apple.quarantine` | 见 D40、§2.5。**这一条推翻 R1 原先的裁决**——R1 写的是"内网过渡阶段可在文档里教用户处理，但不要把 `xattr -dr` 写进安装器"。改口的理由是一条实测出来的事实：现在能双击打开，靠的是 `stage.CopyTree` 逐字节写文件、**碰巧**不搬扩展属性；换成 `ditto`（打包侧为了保符号链接与资源分支已经在用它）就会把标记带进家目录，症状是"装好了却打不开"，看着跟安装毫无关系。与其依赖复制实现的细节，不如显式做一遍 |
+| 清的是**整个入口**，递归 | `.app` 是个目录，zip 解出来的每个成员各带一份标记。只清顶层会留下"包看着干净、内层二进制还带着标记"的混合状态——而 Gatekeeper 判的是这个包 |
+| 清理失败**不判定安装失败**，只打印一行提示 | 这跟"签名与公证"不是一回事：D40 只负责让"装好了打不开"不再发生，**信任链仍然是空的**。为一个扩展属性把整次安装回滚掉，代价与收益不成比例；R1 的正解照旧是签名 + 公证（M5、R18） |
+| 非 macOS 平台**空转**（`quarantine_other.go`） | Linux 没有对应物；Windows 的 MOTW 是 NTFS 备用数据流，由 SmartScreen 在启动时判，安装器摘不掉。空转返回 `nil` 而不是报错，调用方因此不必自己判断平台 |
+| 顺手修掉一个跟 D40 无关的残留：**装完把空的 `staging/` 收掉**（第 10 步） | 用户报的："gpm install 会在家目录留下一个空的 staging/"。那一层是 `Ensure` 建出来的骨架，只有解包目录被 `defer os.RemoveAll(unpack)` 收走；不修的话每个家目录顶层都会多一个看不懂的空目录。判据仍是"只删空目录"，所以并发解包时不会被误删（§2.5 第 10 步、FR-29） |
+
 ### 0.4 待确认假设
 
 | # | 假设 | 影响 |
@@ -249,6 +262,8 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-25 | 失败回滚只回滚 GUI 那一部分（入口、启动器、图形入口、PATH 标记块）；工具链写下的任何东西都不撤、也不记账（D34、D37） |
 | FR-26 | 写账本之前比对这次 Load 时的原文：被改过 / 被挪走 / 期间被别人建了出来 → 报错并让本次操作失败回滚，不覆盖别人的账目（D38） |
 | FR-27 | 卸载之前必须请求许可：交互终端上把账本里这次要删的每一项列出来再问 `[y/N]`；`--yes` 跳过询问；**非交互终端没有 `--yes` 就什么都不删**并打印可照抄的重跑命令；拒绝时退出码 `0`（D39） |
+| FR-28 | 入口拷进家目录之后，清掉它（含其下所有内容）带过来的 macOS 下载标记 `com.apple.quarantine`；**清理失败只打印一行提示，不影响安装结果**；非 macOS 平台空转（D40） |
+| FR-29 | 安装结束（成功或失败）时收掉空的 `<家>/staging/`：那是解包的中转场地、不是家的一部分；**只删空目录**，里面还有东西（并发解包、用户自己放的）就留着 |
 
 ### 1.4 非功能需求
 
@@ -276,7 +291,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | # | 约束 |
 |---|---|
 | C1 | macOS 上 GUI 应用的身份由 `.app` 目录承载；裸 Mach-O 会被 LaunchServices 当成"用终端打开的文档" |
-| C2 | zip 过浏览器/邮件会带 `com.apple.quarantine`（macOS）与 MOTW（Windows），这正是"签名与公证是发布阻塞项"的根源 |
+| C2 | zip 过浏览器/邮件会带 `com.apple.quarantine`（macOS）与 MOTW（Windows），这正是"签名与公证是发布阻塞项"的根源；**v3.10 起安装器落地应用后会显式清掉 macOS 那一半**（D40、FR-28），Windows 的 MOTW 仍归 SmartScreen 判——所以"发布前必须签名 + 公证"这条没有变（R1、R18） |
 | C3 | Windows 上 `[Environment]::SetEnvironmentVariable(..., "User")` 有已知缺陷：会把 `REG_EXPAND_SZ` 写成 `REG_SZ`，用户原有的 `%USERPROFILE%` 之类不再展开 → 必须直接操作注册表原值 |
 | C4 | Windows 默认 `ExecutionPolicy Restricted`，右键"使用 PowerShell 运行"常直接报"在此系统上禁止运行脚本" → 脚本优先 `.cmd`/`.bat` |
 | C5 | Windows 资源管理器解压 zip 会丢 Unix 权限位 → `install.sh` 不能依赖 `+x` |
@@ -358,7 +373,7 @@ tools/fixture/      造测试分发包的脚本（不属于产品；产品路径
 │                               名字 = payload/ 根下那个名字；账本 dir 指这儿
 ├── lib/                        命令行插件的命名空间（v3.6 起 gpm 不再往里写）
 │   └── go_1.27.1_darwin_arm64/ …       cot 装的插件（账本不管，v3.5）
-├── staging/                    解包中转；每次安装一个 unpack-<纳秒> 目录，defer 删除
+├── staging/                    解包中转；每次安装一个 unpack-<纳秒> 目录，defer 删除；装完连这一层一起收掉
 └── <家目录名>-state.json        账本（v3.7；v3.6 是 state.json）
 ```
 
@@ -424,7 +439,7 @@ launch:
    ├ 同 id 已存在 → 先查那个应用在不在跑（D31）          ← proc.Find（纯字符串比对，绝不 stat）
    │  ├ 在跑且没给 --force → 说明后果后拒绝，就此打住（一个字都还没动）
    │  └ 放行后按卸载流程删旧的（D30）
-   └ 拷进去
+   └ 拷进去 → 清掉带过来的下载标记（macOS；v3.10、D40）  ← integrate.StripQuarantine
 5. 生成 bin/<cmd>                                      ← integrate.Launcher
 6. 建立图形入口                                        ← integrate.AppLink
 7. 请求许可后把 bin/ 接进 PATH                          ← integrate.InstallPathBlock
@@ -432,11 +447,16 @@ launch:
    └ Windows → integrate.InstallWindowsPath（改 HKCU\Environment 后广播）
 8. 把 gpm 复制到 bin/gpm                               ← installSelf
 9. 写账本（<家目录名>-state.json）——写之前比对 Load 时的原文（v3.8、D38）                                       ← ledger.Save
+10. 收掉空的 staging/（成功与失败都收；里面还有东西就留着）    ← home.DropStagingIfEmpty（defer，注册在解包那个之前）
 ```
 
 每一步成功都把逆操作压进 rollback 栈；任一步失败就**逆序执行**已压入的动作，然后返回错误。第 4 步之后的失败会把那个入口（`<家>/<入口名>`）一起删掉——v3.5 之前删的是 `lib/<id>_…/`，现在 `dir` 指哪儿就删哪儿。
 
 **第 9 步也可能失败**（v3.8、D38）：写账本之前会跟这次读进来的原文比一次，别人插过手就拒绝写——这时按同一条 rollback 栈回滚 GUI 那部分（工具链的东西留着），宁可在 `<家>` 里留一个空骨架，也不覆盖别人的账目。
+
+**第 4 步末尾那次清理是"尽力而为"**（v3.10、D40）：它不进 rollback 栈，失败也不改退出码，只在输出里留一行可照抄的 `xattr -dr`。理由是它跟签名不是一回事——它只保证"装好了能打开"，不解决"这个包值不值得信"（R1、R18）。
+
+**第 10 步收的是 `staging/` 这一层**（v3.10）：解包目录自己由 `defer os.RemoveAll(unpack)` 带走，但它的父目录 `<家>/staging/` 是 `Ensure` 建出来的骨架，没人收就会在每个家目录顶层留下一个看不懂的空目录（`ls ~/cot` 里多一个 `staging`）。`defer home.DropStagingIfEmpty()` 注册在解包那个 defer **之前**，靠 defer 的后进先出保证它后跑；判据同样是"只删空目录"——并发跑着的另一个 gpm 可能正在里面解包（R16 那一类），用户也可能往里放了东西，那种时候必须留着。
 
 **回滚栈与"先登记后执行"的分工**：账本（第 9 步）是**卸载**的依据，rollback 栈是**本次安装失败**的依据。两者不可互相替代——账本写下去的时候，安装已经成功了。
 
@@ -926,6 +946,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失（自装的那份 `bin/gpm` 只在环境里没有 `COT_HOME` / `TDP_HOME` 时才跟着走） | e2e |
 | 运行中检查 | 纯函数表驱动：`/a/b` 不匹配 `/a/bc`、只认路径边界、`" (deleted)"` 幽灵照认、符号链接两种写法都收、空 `dir` 不匹配任何东西；darwin 的 `pgrep` 模式**恰好**锚在 argv[0]；Linux 用假 `/proc` 造四种 pid（正主 / 只有 argv[0] 的 AppImage / 幽灵 / 无关）；真起一个进程、**把它删掉**，断言仍认得出 | `internal/proc`（三平台） |
 | 拦截语义 | 隔离 `HOME` 后真装一次、真把假应用跑起来，再装第二次 → 必须拒绝且**账本与包目录一个字没动**；`--force` → 放行且有警告；卸载同理；应用不在跑时不许误拦 | `internal/install` |
+| 下载标记（v3.10、D40） | 给夹具打上**真的** `com.apple.quarantine` 再清，断言**顶层与内层文件**都没了；干净树上跑一遍必须安静（不多出一行提示）；非 macOS 上钉住"空转且不报错"。**变异检验过**：把 `StripQuarantine` 改成空函数，第一条用例立刻变红（断言消息里带着还残留的标记值） | `internal/integrate`（darwin / 非 darwin 各一份） |
 | 安装根与 `--default-dir` | `home.Resolve` / `home.ResolveInstall` 的五档优先级（`--dir` > **按 `requires` 取的家** > **从自己的位置推断** > **平台数据目录/<简称>** > 当前目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有账本 / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`，没给 `--default-dir` 时脚本干脆**不传 `--dir`**（交给 gpm 按上面那条链自己定）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
 | 账本命名与迁移（v3.7） | 账本落在 `<家>/<家目录名>-state.json`；只有旧 `state.json` 时读得到，写回后旧文件消失、新文件就位；两个名字都在时新的说了算、旧的原地不动；坏 JSON 的报错指向真正读到的那份文件 | `internal/ledger`（`ledger_test.go`）；`internal/home` 与 `internal/install` 各有用例守着 `RootFromSelf` 认旧账本、以及"新旧名都算家骨架" |
 | 工具链已装好则跳过（v3.8） | 先手放一个"老的" `<家>/bin/cot`，再用一个会写标记文件的假 cot 装包：假 cot **不该被调用**、老的 cot 原样不动、启动器照建；加 `--force` 才重铺 | `internal/install`（`toolchain_test.go` 的 `TestInstallSkipsToolchainAlreadyInstalled` / `TestInstallForceReinstallsToolchain`） |
@@ -934,7 +955,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 卸载前请求许可（v3.9） | 非交互（空输入）不给 `--yes`：输出含"要卸载的是"、"不是交互终端"、"gpm uninstall demo --yes"，入口 / 启动器 / 账本**一项没动**；给了 `--yes` 才删且输出里不出现"是否继续"；`/dev/null` 当输入时会走到读那一行、报"没有读到你的输入"；先拒绝再给 `--yes` 能接着走通 | `internal/install`（`uninstall_test.go` 四条：`TestUninstallNeedsYesWhenNotATerminal` / `TestUninstallWithYesGoesThrough` / `TestUninstallPromptWithoutInputKeepsEverything` / `TestUninstallAsksThenDoesIt`） |
 | 工具链自举 | 用一个会写日志的假 cot（脚本）：`requires` 非空时它被调用一次、收到的家参数正确；返回非 0 时整次安装失败且**一个字都没落下**；`requires` 为空时它**根本不被调用**（A1、A11） | `internal/install` |
 | 启动器环境注入 | 生成的 macOS 启动器里含 `export COT_HOME=…` 与 PATH 前置，交给 `zsh -n` 解析；真机上从终端启动一次，进程环境里能看到 `COT_HOME`（A12） | `internal/integrate` |
-| 入口落点 | 入口落 `<家>/<顶层名>`、`lib/` 保持空、账本 `dir` / `entry` 都在家里、卸载后入口消失；`payload/` 根下多一个条目 → 报错且不留痕；家里已有别人的同名文件 → 拒绝、`--force` 后覆盖；入口叫 `bin` / `lib` / `staging` / 账本名 → 即使 `--force` 也拒（D35） | `internal/install`（`layout_test.go`） |
+| 入口落点 | 入口落 `<家>/<顶层名>`、`lib/` 保持空、账本 `dir` / `entry` 都在家里、卸载后入口消失；`payload/` 根下多一个条目 → 报错且不留痕；家里已有别人的同名文件 → 拒绝、`--force` 后覆盖；入口叫 `bin` / `lib` / `staging` / 账本名 → 即使 `--force` 也拒（D35）。**装完（含被拦下的失败路径）不留空的 `<家>/staging/`**，而里面还有东西时（并发解包 / 用户自己放的）不许删（v3.10、FR-29） | `internal/install`（`layout_test.go`）、`internal/home`（`home_test.go`） |
 | 跨平台 | CI 矩阵 `{ubuntu,macos,windows}` 真跑单测；`{darwin,linux,windows} × {amd64,arm64}` 交叉编译 | §2.16 |
 | 静态检查 | `go vet` | 全仓 |
 
@@ -985,6 +1006,8 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 
 **v3.9（卸载前问一句）的真机验证（macOS，2026-10-09）**：拿一个真装着 AI Desk 0.2.0 的家（`/tmp/art38-home/cot`，就是 v3.8 那轮 e2e 装出来的），用当轮编出来的 v3.9 二进制试三种调法——① `gpm uninstall ai-desk --dir <家> < /dev/null`：先打印 `要卸载的是：` / `  AI Desk 0.2.0（ai-desk）` / `  入口      …/AI Desk.app` / `  启动器    …/bin/ad` / `  图形入口  …/Applications/AI Desk.app` / `这些是 gpm 自己装下的东西，删掉就回不来了。`，接着是 `是否继续？[y/N] 没有读到你的输入，什么都没删。确认要删就重跑一次并明确同意：` + `  gpm uninstall ai-desk --yes`，最后 `已取消，"ai-desk" 什么都没删。`——**exit=0**，而且家里与账本**一位没动**（`ls` 与 `cot-state.json` 前后一致）。② `printf 'y\n' | gpm uninstall ai-desk`：**管道不算交互终端**，输出直接跳到 `当前不是交互终端，没有动手。…`——回 `y` 也没用，exit=0，东西还在。③ `gpm uninstall ai-desk --yes`：`已删除 …/Applications/AI Desk.app` / `已删除 …/bin/ad` / `已删除 …/AI Desk.app` / `保留 …/bin/gpm：环境里 COT_HOME=…，这个家归工具链管，gpm 自己这一份不删。`，账本里 `"packages": []`——**工具链的 `bin/cot` 从头到尾没被碰过**（D34）。
 
+**v3.10（清掉下载标记 / 收掉空的 `staging/`）的真机验证（macOS，2026-10-09）**：用当轮编出来的 v3.10 二进制（`gpm 0.6.0-dev`）装 AI Desk 的 release 包 `ai-desk-0.2.2-darwin-amd64.zip`。① **下载标记**：先把 zip 打上 `0081;…;Safari;` 再用 `ditto -x -k` 解压（模拟"浏览器下载 + Finder 解压"）——实测解出来的 `install.sh`、`gpm`、`payload/AI Desk.app` 与内层二进制**全都带上了标记**（两种解压方式都传），而带标记的 `install.sh` 与 `gpm` 在终端里照常能跑（`./install.sh` rc=0）；拿这份包装进沙箱 `HOME` 里的 `<家>` 之后，`xattr -p com.apple.quarantine "<家>/AI Desk.app"` → `No such xattr`，`open` rc=0、进程活着、`Info.plist` 是 0.2.2、账本 `verified: true`。对照：同一份带标记的包，**跳过安装器**直接 `open payload/AI Desk.app` → `_LSOpenURLsWithCompletionHandler() failed with error -128`，这就是 F13 要消掉的那件事。② **`staging/`**：同一个包装完后 `ls <家>` → `AI Desk.app  bin  lib  <家目录名>-state.json`，**没有 `staging`**；再装一次（覆盖式）依旧没有；换一个"`payload/` 根下多一个条目"的坏包、且家是**预先存在**的（这样 `DropIfEmpty` 不会把家整个收走），被 `SHA256SUMS 没有覆盖这些文件` 拦下之后 `ls <家>` → `bin  lib`，同样没有 `staging`——失败路径也收。手工先在 `<家>/staging/` 里放一个 `unpack-999` 再装 → 那个目录**还在**（并发保护，对应 R16 那一类）。
+
 ---
 
 ## 4. 里程碑
@@ -1006,6 +1029,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **M12 账本按家命名（v3.7）** | `home.LedgerPath` / `HasLedger` / `LegacyLedgerPath`；`ledger.Load` 认旧 `state.json`、`Save` 写新名字并收掉旧的；新旧两个名字都算家骨架；`ledger_test.go` 四条用例 + 三份文档同步（§0.3.7、D36） | ✅ **已完成**（v3.7）：三平台 `go vet` + `go test ./...` 全绿，本机真机复验（§3）；CI 第一次在 Windows 腿上抓到"手写 JSON 里的 Windows 路径成了非法转义"，改用 `json.Marshal` 后九条腿全绿 |
 | **M13 已经装好就别动它（v3.8）** | `installToolchains(..., force, out)` 的跳过判据；回滚范围写进注释与文档（只回滚 GUI）；`ledger.Save` 的原文比对（`loadedFrom` / `rawAtLoad` / `checkUnchanged`）；六条新用例 + 三份文档同步（§0.3.8、D37、D38） | ✅ **已完成**（v3.8）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿，本机四场景 e2e（§3） |
 | **M14 卸载前问一句（v3.9）** | `UninstallOptions`（`Dir` / `Force` / `Yes` / `In` / `Out`）与 `askUninstall`（照账本摊开 + `[y/N]` + 非交互拒绝 + 退出码 `0`）；`gpm uninstall --yes` 进 `--help`；四条新用例（`uninstall_test.go`）+ 三份文档同步（§0.3.9、D39、FR-27、§2.9.2） | ✅ **已完成**（v3.9）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿，本机三种调法 e2e（§3） |
+| **M15 擦掉下载标记（v3.10）** | `integrate.StripQuarantine`（darwin 走 `/usr/bin/xattr -dr`，写绝对路径不查 PATH；其它平台空转）；install 第 4 步拷完入口调一次，**失败只提示**；两条 darwin 用例 + 一条非 darwin 用例。同一版里顺手修的：`home.DropStagingIfEmpty` + install 的一句 `defer`（第 10 步，收掉空的 `staging/`；FR-29），两条 `home` 用例 + 两条 `install` 用例。文档同步（§0.3.10、D40、FR-28、FR-29、R1/R2/R18） | ✅ **已完成**（v3.10）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿；两处都做了变异检验（把 `StripQuarantine` 改空 / 注释掉那句 `defer`，对应用例立刻变红）；本机拿"打过标记的 zip + ditto 解压"（模拟浏览器下载）端到端复验（§3） |
 
 ---
 
@@ -1015,8 +1039,8 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 
 | # | 风险 | 影响 | 对策 |
 |---|---|---|---|
-| **R1** | **macOS 签名与公证**（Developer ID）、**Windows 代码签名**是发布阻塞项 | zip 过浏览器/邮件会带 `com.apple.quarantine` 与 MOTW，用户双击 `install.sh` 或应用时被 Gatekeeper / SmartScreen 拦。签名在 Mach-O 内部，过 zip 不会丢；彻底解决只能签名 + 公证 + `xcrun stapler staple`（票据订在包上，断网也能验） | 发布前必须解决；内网过渡阶段可在文档里教用户处理，但**不要把 `xattr -dr com.apple.quarantine` 写进 `install.sh`**——那是替用户绕过安全检查 |
-| **R2** | **合成外壳没有独立签名**（D24） | 上游只发裸二进制、由 gpm 合成 `.app` 时，外壳本身不是签名包；若下载物带 quarantine，Gatekeeper 可能直接拦 | 与 R1 同源；优先收录上游自己发 `.app` 的软件 |
+| **R1** | **macOS 签名与公证**（Developer ID）、**Windows 代码签名**是发布阻塞项 | zip 过浏览器/邮件会带 `com.apple.quarantine` 与 MOTW，用户双击 `install.sh` 或应用时被 Gatekeeper / SmartScreen 拦。签名在 Mach-O 内部，过 zip 不会丢；彻底解决只能签名 + 公证 + `xcrun stapler staple`（票据订在包上，断网也能验） | **half done（v3.10、D40）**：安装器落地应用后显式清掉 `com.apple.quarantine`（递归、失败只提示），"装好了双击打不开"这件事不再发生，也不再依赖"复制碰巧不搬扩展属性"。**但这不是签名**——它把"从哪来"这道唯一的信任关又绕过了一步（R18），信任链仍然是空的。所以**签名 + 公证照旧是发布阻塞项**（M5），Windows 侧的 MOTW / SmartScreen 同理（安装器摘不掉那个备用数据流） |
+| **R2** | **合成外壳没有独立签名**（D24） | 上游只发裸二进制、由 gpm 合成 `.app` 时，外壳本身不是签名包；若下载物带 quarantine，Gatekeeper 可能直接拦 | 与 R1 同源；**quarantine 那一半已被 v3.10 的清理覆盖**（清的是整个入口，外壳与内层二进制一起），但"外壳没有独立签名"这一半照旧——优先收录上游自己发 `.app` 的软件。实测补充（v3.10，AI Desk 0.2.2）：darwin-arm64 那份的内层二进制带链接器给的 `adhoc,linker-signed` 标记（Apple Silicon 因此肯执行它），darwin-amd64 那份 **`code object is not signed at all`**（Intel 上照跑）——即"能执行"与"过得了 Gatekeeper"是两件事，`spctl -a` 对两者都报 `rejected` |
 | **R3** | ~~Windows 侧 PATH 与开始菜单尚未实现~~ | — | **已解决**（§2.13）；CI 的 windows job 每次都会重跑真注册表往返，防止改回去 |
 | **R4** | ~~启动器没有做名字冲突检查~~ `integrate.Launcher` 会直接覆盖 `bin/<cmd>` | 若用户已在 `<家>/bin` 放了同名文件会被静默覆盖；v3.5 把工具链的家与用户的 `bin/` 合流之后，撞名的机会更多（`ac` 还会撞 macOS 的 `/usr/sbin/ac`） | **已解决**（v3.5，FR-21）：`integrate.OwnedByGpm` 认出"不是 gpm 写的"同名文件、`ledger.FindByCmd` 拦住"别的包占着这个名字"，两者都报错拒绝、只有 `--force` 放行，撞上时账本与包目录一个字都不动（`internal/install` 三个用例守着） |
 | **R5** | 上游应用改名 / 改目录结构 | `<简称>-manifest.yaml` 与 `payload/` 对不上，安装失败 | 打包脚本在 CI 里跑，写完就验，不靠人手维护 |
@@ -1032,6 +1056,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **R15** | 入口搬到顶层之后，**更容易与用户自己放的东西撞名** | v3.5 那种 `<id>_<版本>_<平台>` 命名几乎不可能撞上；顶层一个叫 `ad` 的文件或目录就撞了 | 已处理：`checkAppDir` 在动手之前比对，已有非 gpm 的同名东西就拒绝、只有 `--force` 放行；骨架名（`bin` / `lib` / `staging` / 账本名 / `log`）连 `--force` 都不放行（D35） |
 | **R16** | **两个 gpm 同时改一个家**（同一台机器上两次安装 / 安装与卸载并行） | 最后写账本的那一次会把对方刚记下的包覆盖掉：包的文件在磁盘上、账本里却没有——以后 `uninstall` 再也找不到它，成了"卸载不掉的一小块" | 已处理（v3.8、D38）：`Save` 之前比对 Load 时的原文，被改过 / 被挪走 / 期间被别人建出来都拒绝写，本次操作失败回滚（GUI 那部分）并提示重跑。**不做的是加锁**：要新文件、崩溃留死锁、Windows 得另写 `LockFileEx`，收益不抵复杂度——这条风险现在退化成"偶发要重跑一次" |
 | **R17** | 卸载要许可之后，**已有的脚本**从"删掉了"变成"安静地什么都没删" | 在 CI / 安装脚本里连着跑 `gpm uninstall <id>`（不给 `--yes`）：退出码 `0`，东西还在。只看退出码的脚本会以为删干净了，残留要很久以后才被发现 | 已按三条降低：① 非交互时**必然**打印一行可照抄的 `gpm uninstall <id> --yes`；② 拒绝用 `0` 退出是刻意的（那是"不同意"，不是错误），所以"脚本要显式给 `--yes`"写进了 `--help`、§2.14 与 `PACKAGE-FORMAT.md` §8；③ 输出里固定出现 `已取消` 供人 grep |
+| **R18** | 安装器替用户擦掉下载标记之后，**"这个包从哪来"这道唯一的信任关被绕过了一步** | 用户的同意对象是"我下载的这个 zip"，擦标记把这份同意延伸成了"这个 zip 里的一切都可信、不必再由系统多问一句"。而 zip 里除了应用还有 gpm 自己与工具链（`tools/` 下的二进制同样会被执行），用户并没有逐项看过；擦掉标记之后，即使下载物在中途被替换过，系统也不会再提示 | **已接受并写进 D40**，四条降低：① 只擦 **gpm 自己落地的那一份**（`<家>/<入口顶层名>`），不碰用户的下载目录、不碰解压出来的原包；② 清理发生在 `SHA256SUMS` 校验**之后**（第 2 步过不去根本走不到这儿），擦掉的至少是清单里写明的那些字节；③ 失败只提示、不静默；④ 信任的正解仍是签名 + 公证（M5），这一步只是让过渡期内"装好了打不开"不再发生 |
 
 ### 开放问题
 
@@ -1080,7 +1105,9 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 应用外壳 / shell | gpm 为"上游只发裸可执行文件"的 macOS 应用合成的最小 `.app`（§2.7） |
 | 图形入口 | macOS `~/Applications` 链接、Linux `.desktop`、Windows 开始菜单 `.lnk` |
 | 卸载许可 / `--yes` | v3.9（D39）起 `uninstall` 动手之前把账本里要删的每一项摊开并问 `[y/N]`；`--yes` 跳过询问。**不是交互终端又没有 `--yes` 就什么都不删**（退出码 `0`，§2.9.2） |
+| 下载标记 / `com.apple.quarantine` | macOS 给"下载来的"文件打的扩展属性，LaunchServices 打开应用时据此拦 Gatekeeper（R1）。**v3.10（D40）起安装器把落地入口上的这份标记递归清掉**（§2.5 第 4 步），所以"装好了双击打不开"不再是它造成的 |
 | rollback 栈 | 本次安装失败时逆序撤销的依据（与账本分工不同，§2.5） |
+| staging / `unpack-<纳秒>` | `<家>/staging/` 下的解包中转目录：`stage.Materialize` 把包展开到那儿、校验与读取清单都在里面做，装完由 `defer os.RemoveAll` 收走。**v3.10 起连 `<家>/staging/` 这一层也收掉**（空了才收，§2.5 第 10 步） |
 | 正在运行检查 / `proc.Find` | 覆盖安装或卸载之前，查包目录底下有没有活着的进程（§2.9.1）。只做**纯字符串**路径前缀比对，绝不 `stat`——幽灵进程的路径早就没了 |
 | 幽灵进程 / ghost | 文件被删或换掉之后仍抓着旧 inode 继续跑的进程。在 macOS 上更麻烦：LaunchServices 把 `.app` 路径一直绑在它身上，用户点图标只会把它唤到前台 |
 

@@ -286,3 +286,15 @@ func (h *Home) DropIfEmpty() {
 		os.Remove(d)
 	}
 }
+
+// DropStagingIfEmpty 收掉空的 staging/：它是解包的中转场地，不是家的一部分。
+//
+// 装完（成功或失败）那里都该是空的 —— 解包目录由 Install 的
+// `defer os.RemoveAll(unpack)` 收走。不收这一层的话，每个家目录里都会
+// 多出一个空的 staging/，看的人只会猜它是不是坏了、能不能删。
+//
+// 判据与 DropIfEmpty 同一条：只用 Remove（不是 RemoveAll）。并发跑着的
+// 另一个 gpm 可能正在里面解包，用户也可能往里放了东西 —— 那种时候留着。
+func (h *Home) DropStagingIfEmpty() {
+	os.Remove(h.Staging())
+}

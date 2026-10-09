@@ -125,7 +125,8 @@ launch:
 │                                 #   Windows / Linux 上就是 ai-desk.exe / ai-desk，与 bin/ 平级
 ├── lib/                          # 命令行插件的命名空间（v3.6 起 gpm 不再往里写）
 │   └── go_1.27.1_darwin_arm64/ … # cot 装的插件（gpm 不记账、卸载不碰）
-├── staging/                      # 解包中转，每次安装一个 unpack-<纳秒>，结束即删
+├── staging/                      # 解包中转：每次安装一个 unpack-<纳秒>，装完连这一层一起收掉
+│                                 #   （里面还有东西就留着：另一个 gpm 可能正在解包）
 └── <家目录名>-state.json         # 账本：所有外部副作用的唯一真相（v3.7；v3.6 是 state.json）
 ```
 

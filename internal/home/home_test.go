@@ -472,3 +472,45 @@ func TestEnsureCreatesSkeleton(t *testing.T) {
 		t.Errorf("Ensure 不该顺手建账本：%v", err)
 	}
 }
+
+// staging/ 空了就该收掉：它只是解包的中转场地，不是家的一部分。
+func TestDropStagingIfEmptyTakesTheEmptyOne(t *testing.T) {
+	h, err := Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	h.DropStagingIfEmpty()
+	if _, err := os.Stat(h.Staging()); !os.IsNotExist(err) {
+		t.Errorf("空的 staging/ 该被收掉：%v", err)
+	}
+	// 同一批骨架里的另外两个不动：bin/ 与 lib/ 是家的组成部分（lib/ 空着
+	// 也是常态，见 X2），只有 staging/ 是临时的。
+	for _, d := range []string{h.Bin(), h.Lib()} {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("%s 不该跟着走：%v", d, err)
+		}
+	}
+}
+
+// 里面还有东西时必须留着 —— 并发跑的另一个 gpm 可能正在解包，
+// 用户也可能自己往里放了东西。
+func TestDropStagingIfEmptyKeepsTheBusyOne(t *testing.T) {
+	h, err := Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	busy := filepath.Join(h.Staging(), "unpack-123")
+	if err := os.MkdirAll(busy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.DropStagingIfEmpty()
+	if _, err := os.Stat(busy); err != nil {
+		t.Errorf("staging/ 里有东西时不该被删：%v", err)
+	}
+}

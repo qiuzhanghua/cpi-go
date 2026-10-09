@@ -9,6 +9,8 @@
 > **v3.8 定了三件事**（[`DESIGN.md`](DESIGN.md) D37/D38、§0.3.8）：① **工具链已经装好就跳过**——`<根>/bin/cot`（或 `tdp`）已经是文件时不再跑包里自带的那一份，`--force` 才重铺；跳过不影响 PATH 集成，"`~/cot` 已经好了但 `.profile` 没改好"就把 rc 补好（用户原话："本机已经安装好，并且修改了 .profile 之类的文件，就不用再安装；如果 ~/cot 之类的地方已经安装好了，但是 .profile 之类的文件没有修改，则修改好"）；② **失败回滚只回滚 GUI 那部分**，命令行部分（cot 等）不回滚（"说不定以前就安装好了"）；③ **账本写回之前比对原文**（不引锁文件）——命名解决的是归属与撞名，不解决并发写；被别人动过就让这次操作失败、提示重跑。
 >
 > **v3.9 给卸载补了一道许可**（[`DESIGN.md`](DESIGN.md) D39、§0.3.9、§2.9.2）：`gpm uninstall <id>` 在交互终端上把账本里这次要删的每一项摊开（入口 / 启动器 / 图形入口 / PATH 块）再问 `[y/N]`；`--yes` 跳过询问；**不是交互终端又没有 `--yes` 就什么都不删**（退出码仍是 `0`）。用户原话："给 uninstall 也加个 --yes（与 install 对齐）"——在此之前 uninstall 从不询问，所以这是新加的一道闸，不是给旧提示补个开关。落地见 F12、A23。
+>
+> **v3.10 让安装器自己擦掉下载标记**（[`DESIGN.md`](DESIGN.md) D40、§0.3.10）：入口拷进 `<根>/<入口顶层名>` 之后跑一次 `xattr -dr com.apple.quarantine <入口>`（递归，`.app` 里每个文件各带一份标记）。**这一条推翻了 R1 原先那句"不要把 `xattr -dr` 写进安装器"**——原来能双击打开靠的是复制**碰巧**不搬扩展属性，那不是契约；清不掉只打印一行提示、不判定安装失败。落地见 F13、A24，代价与降低手段记在 R18。
 
 ## 1. 背景与动机
 我已经开发了cot_cli与tdp-cli，都是给程序员用的开发和管理工具。现在要给非开发人员准备带GUI的Desktop工具。
@@ -55,6 +57,10 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 **F11 tdp 同机制**：`tdp i -s "<根>"`；本次不测。
 
 **F12 卸载前请求许可（v3.9）**：`gpm uninstall <id>` 先把账本里这次要删的每一项**逐条列出来**（入口 / 启动器 / 图形入口 / PATH 块，全部取自账本、**不扫目录**），再问 `[y/N]`；`--yes` 跳过询问；**不是交互终端（脚本、管道、CI）时不给 `--yes` 就什么都不删**，并打印一行可照抄的 `gpm uninstall <id> --yes`；回 `y` / `yes` 才动手。**拒绝时退出码 `0`**（与 install 放弃 PATH 集成同口径），输出里固定出现 `已取消` 供人 grep。清单里只会有账本登记过的东西——工具链的 `bin/cot`、`env-cot*`、`lib/` 下 cot 自己的包不会出现（F9 的边界）。
+
+**F13 清掉下载标记（v3.10）**：入口拷进 `<根>/<入口顶层名>` 之后，清掉它（含其下所有内容）带过来的 `com.apple.quarantine`——递归，因为 `.app` 里的每个文件在 zip 里各带一份标记，而 Gatekeeper 判的是整个包。**清不掉只打印一行可照抄的提示，不判定安装失败**（这一点与签名不同：它只保证"装好了能打开"，不解决"这个包值不值得信"）。非 macOS 平台空转：Linux 没有对应物，Windows 的 MOTW 是 NTFS 备用数据流、由 SmartScreen 在启动时判，安装器摘不掉。这一条**推翻** R1 原先"不要把 `xattr -dr` 写进安装器"的裁决（DESIGN D40、R18）。
+
+**F14 收掉空的 staging/（v3.10）**：安装结束（成功或失败）时把空的 `<根>/staging/` 收掉——那一层是 `Ensure` 建出来的骨架，只是解包的中转场地，不是家的一部分（用户报的："gpm install 会在家目录留下一个空的 staging/"）。**只删空目录**：里面还有东西（并发跑着的另一个 gpm 正在解包、或用户自己往里放了东西）就留着。解包目录本身（`unpack-<纳秒>`）照旧由 `defer os.RemoveAll` 收走。
 
 ## 4. 非功能需求
 
@@ -126,3 +132,5 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **A21** 回滚范围（v3.8）：让工具链成功、后面的 GUI 步骤失败（家里预放别人的同名入口）→ 整次安装非 0 退出、账本里没有该包、没有启动器，但 `~/cot/bin/cot` 与别人放的东西都还在（`TestInstallKeepsToolchainWhenGuiPartFails`）。
 - **A22** 账本并发写（v3.8）：`gpm list` 读完账本之后、`gpm install` 写账本之前手工改一次账本 → 安装失败、提示"请重跑一次"，磁盘上账本仍是别人那份（`internal/ledger/ledger_test.go` 的 `TestSaveRefusesWhenLedgerChangedUnderneath` / `TestSaveRefusesWhenLedgerAppeared`）。
 - **A23** 卸载许可（v3.9）：非交互（`< /dev/null`）不给 `--yes` 跑 `gpm uninstall ai-desk` → 输出含"要卸载的是"、"没有读到你的输入"、可照抄的 `gpm uninstall ai-desk --yes`，**退出码 `0`**，入口 / 启动器 / 软链 / PATH 块 / 账本一项没动；`printf 'y\n' |` 也不算同意（打印"当前不是交互终端"）；加 `--yes` 才删，且输出里没有"是否继续"，`~/cot/bin/cot` 与 `env-cot*` 仍在（`internal/install/uninstall_test.go` 四条用例，真机三种调法见 DESIGN §3）。
+- **A24** 下载标记（v3.10）：给夹具打上**真的** `com.apple.quarantine` 再清 → 顶层与内层文件上的属性都没了；干净树上跑一遍安静（不多出一行提示）；非 macOS 上空转且不报错（`internal/integrate/quarantine_darwin_test.go` 两条、`quarantine_other_test.go` 一条；把实现改成空函数后第一条立刻变红，DESIGN §3）。端到端：zip 先打标记再用 `ditto` 解压（模拟浏览器下载）→ 用源码编出的 gpm 装 → `<根>/AI Desk.app` 不带标记、`open` 得起来、账本 `verified: true`。
+- **A25** 不留空的 `staging/`（v3.10）：装完（成功路径）与"`payload/` 根下多一个条目被拦下"（失败路径，家是预先存在的）之后，`<根>/staging` 都不存在，而 `bin/`、`lib/` 照旧；先往 `<根>/staging/` 放一个 `unpack-999` 再装 → 那个目录还在（`internal/home/home_test.go` 两条、`internal/install/layout_test.go` 两条；注释掉那句 `defer` 后两条 install 用例立刻变红，DESIGN §3）。

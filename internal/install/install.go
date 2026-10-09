@@ -67,6 +67,12 @@ func Install(src string, opt Options) error {
 		return err
 	}
 
+	// staging/ 只在安装期间有意义：它是下面那个解包目录的父目录，装完
+	// （成功或失败）里外都是空的，留着只会让每个家目录多一个看不懂的空目录。
+	// 注册在 `defer os.RemoveAll(unpack)` **之前** —— defer 后进先出，
+	// 先注册的后跑，正好等解包目录清完再看这一层空不空。
+	defer h.DropStagingIfEmpty()
+
 	unpack := filepath.Join(h.Staging(), fmt.Sprintf("unpack-%d", time.Now().UnixNano()))
 	if err := os.RemoveAll(unpack); err != nil {
 		return err
@@ -177,6 +183,15 @@ func Install(src string, opt Options) error {
 		if err := os.Chmod(entryAbs, 0o755); err != nil {
 			return fail(err)
 		}
+	}
+
+	// v3.10（D40）：把下载器打在包上的 quarantine 标记从落地产物上清掉。
+	// 复制走的是 stage.CopyTree（逐字节写、不搬扩展属性），所以正常路径上
+	// 这里是空转；但"碰巧"不是契约 —— 哪天复制换成 ditto，标记就会跟着
+	// 进家目录，症状是"装好了却双击打不开"，看着跟安装毫无关系。
+	// 失败不判定安装失败：R1 的正解是签名 + 公证，这一步只是过渡期兜底。
+	if err := integrate.StripQuarantine(entryAbs); err != nil {
+		fmt.Fprintf(out, "提示：没能清掉下载标记（%v）。手动执行：\n  xattr -dr com.apple.quarantine %q\n", err, pkgDir)
 	}
 	fmt.Fprintf(out, "已释放到 %s\n", pkgDir)
 
