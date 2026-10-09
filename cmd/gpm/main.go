@@ -96,7 +96,7 @@ func cmdInstall(args []string) error {
 	yes := fs.Bool("yes", false, "不询问，直接做 PATH 集成")
 	noPath := fs.Bool("no-path", false, "完全不碰 PATH")
 	skip := fs.Bool("skip-verify", false, "跳过 SHA256SUMS 校验（只用于调试）")
-	force := fs.Bool("force", false, "应用正在运行、或命令名被别人占着也照做（不推荐）")
+	force := fs.Bool("force", false, "应用正在运行、命令名被别人占着、或强推 <家>/bin/gpm 里那份（版本读不出来时），也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm install <目录或 .zip> [选项]")
 		fs.PrintDefaults()
@@ -126,6 +126,9 @@ func cmdInstall(args []string) error {
 		NoPath:     *noPath,
 		SkipVerify: *skip,
 		Force:      *force,
+		// 收尾时要不要把 <家>/bin/gpm 里那份旧的换成本进程，靠这个版本号
+		// （v3.11、D41）。发布产物由 -ldflags 把它注成真版本号。
+		SelfVersion: version,
 	})
 }
 

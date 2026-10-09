@@ -31,9 +31,16 @@ type Options struct {
 	Yes        bool      // 不询问，直接做 PATH 集成
 	NoPath     bool      // 完全跳过 PATH 集成
 	SkipVerify bool      // 跳过 SHA256SUMS 校验（只用于调试）
-	Force      bool      // 应用正在运行、或命令名被别人占着，也照做
+	Force      bool      // 应用正在运行、命令名被别人占着、或强推 gpm 自己那份，也照做
 	In         io.Reader // 默认 os.Stdin
 	Out        io.Writer // 默认 os.Stdout
+
+	// SelfVersion 是**正在运行的这份 gpm** 自己的版本（cmd/gpm 的 main.version）。
+	//
+	// 收尾时要不要拿当前进程去顶掉 <家>/bin/gpm 里那份旧的，全靠它（v3.11、D41）；
+	// 留空表示"不知道自己是哪个版本"，那就谁都不动 —— 拿不准时不动，是这个字段
+	// 唯一的保守方向。
+	SelfVersion string
 }
 
 // Install 安装一个分发包（目录或 .zip）。
@@ -271,12 +278,21 @@ func Install(src string, opt Options) error {
 		}
 	}
 
-	self, copied, keptOld, err := installSelf(h.Bin())
+	self, err := installSelf(h.Bin(), opt.SelfVersion, opt.Force)
 	if err != nil {
 		fmt.Fprintf(out, "提示：没能把 gpm 自己拷进 %s：%v\n", h.Bin(), err)
 	}
-	if keptOld {
-		fmt.Fprintf(out, "提示：%s 已经有一个 gpm，这次没覆盖它。\n", self)
+	// v3.11（D41）：家里那份比这份旧就换掉，并说清楚换了什么。
+	// 新装（那儿本来没有）不吱声 —— 那是从 v3.5 起就有的默认行为。
+	switch {
+	case self.Replaced && self.OldVer != "":
+		fmt.Fprintf(out, "已把 %s 从 gpm %s 换成 gpm %s。\n", self.Dest, self.OldVer, opt.SelfVersion)
+	case self.Replaced:
+		fmt.Fprintf(out, "已按 --force 覆盖 %s（原来那份的版本读不出来）。\n", self.Dest)
+	case self.Kept && self.OldVer != "":
+		fmt.Fprintf(out, "提示：%s 已经有一个 gpm %s，没有这份新，这次没覆盖它。\n", self.Dest, self.OldVer)
+	case self.Kept:
+		fmt.Fprintf(out, "提示：%s 已经有一个 gpm，版本读不出来，这次没覆盖它；要强制替换就加 --force。\n", self.Dest)
 	}
 
 	led.Put(ledger.Package{
@@ -296,8 +312,11 @@ func Install(src string, opt Options) error {
 	})
 	// 只记「我们自己放进去的那一份」。原来就在那儿的 gpm 属于用户，
 	// 卸载最后一个包时不能顺手把它删掉（见 installSelf）。
-	if copied {
-		led.Self = self
+	//
+	// v3.11 起"替换掉旧的"也算我们放的：那份文件确实是这次由我们写下去的，
+	// 卸载时按同一条规矩处置（见 Uninstall 里对 Self 的判断）。
+	if self.Wrote {
+		led.Self = self.Dest
 	}
 	if err := led.Save(h.LedgerPath()); err != nil {
 		return fail(err)
@@ -724,64 +743,87 @@ func procsText(procs []proc.Process) string {
 	return strings.Join(parts, "，")
 }
 
+// selfResult 是一次 installSelf 的结果，调用方靠它写提示、决定账本记不记。
+type selfResult struct {
+	Dest     string // <家>/bin/gpm（Windows 上是 gpm.exe）
+	Wrote    bool   // 这次真的写了一份（新装、或替换掉旧的）：卸载最后一个包时该由我们删掉
+	Replaced bool   // 写下去的那份是**替换**来的（原来那儿有一份）——用来区分"新装"
+	Kept     bool   // 那儿本来就有一份，我们没动它
+	OldVer   string // 被替换掉的、或留下来的那一份的版本；读不出来是空串
+}
+
 // installSelf 把正在运行的 gpm 拷进 <家目录>/bin，保证之后 list/uninstall 还找得到它。
 //
-// 已经有一个 gpm 就不再装，也不覆盖。装到哪儿是安装器传进来的（可能是 ~/cot
-// 这种和这个包毫无关系的目录），那里原本那个 gpm 属于用户，不该被包里的旧版本
-// 顶掉 —— 那正是「装个旧包把新 gpm 降级」的来路。
+// 那儿已经有一份时**比一次版本**（v3.11、D41）：包里这份更新就换掉它，同版本或更旧
+// 就原样留着。在这之前是一律不覆盖 —— 那确实防住了"装个旧包把新 gpm 降级"，但也让
+// gpm 自己永远升不上去（O7：装新包既不会覆盖 <bin>/gpm，gpm 也没有升级命令）。
 //
-// 三个返回值：dest 是那个位置；copied 表示这次真的拷了一份（即这个文件是我们
-// 放的，卸载最后一个包时该由我们删掉）；keptOld 表示那儿的 gpm 本来就有、我们
-// 没动它（这种情况不写进账本的 self 字段，免得卸载时删掉用户自己的东西）。
-func installSelf(binDir string) (dest string, copied, keptOld bool, err error) {
+// 版本是**问出来的**（跑那儿那份的 `--version`），不是从账本里读的：账本记的是我们
+// 上次放的那一份，用户随手把那个文件换掉之后账本就不作数了，而比错的方向恰好是最坏
+// 的一种 —— 拿新的盖掉更新的。问不出来（不是可执行文件、跑不起来、输出认不出）就
+// 什么都不做：宁可漏升一次，也不猜。
+//
+// 按用户的裁决，替换**不看那个文件是谁放的**：不管是用户自己搁的还是我们上次放的，
+// 只要版本更旧就换（外来的覆盖风险记在 DESIGN R19）。force 是给"读不出来但就是想换"
+// 留的口子（--force）。
+func installSelf(binDir, selfVersion string, force bool) (selfResult, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	dest = filepath.Join(binDir, "gpm")
+	dest := filepath.Join(binDir, "gpm")
 	if runtime.GOOS == "windows" {
 		dest += ".exe"
 	}
+	res := selfResult{Dest: dest}
 	if filepath.Clean(exe) == filepath.Clean(dest) {
-		return dest, false, false, nil // 运行的就是它，无事可做
+		return res, nil // 运行的就是它，无事可做
 	}
 	if fi, err := os.Stat(dest); err == nil && !fi.IsDir() {
-		return dest, false, true, nil // 已经有了，原样留着
+		if v, ok := querySelfVersion(dest); ok {
+			res.OldVer = v.String()
+		}
+		if !force && !selfIsNewer(selfVersion, res.OldVer) {
+			res.Kept = true
+			return res, nil // 不比这份新（或读不出来），原样留着
+		}
+		res.Replaced = true
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	in, err := os.Open(exe)
 	if err != nil {
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	defer in.Close()
 	tmp := dest + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	if _, err := io.Copy(f, in); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		os.Remove(tmp)
-		return "", false, false, err
+		return selfResult{}, err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
-		return "", false, false, err
+		return selfResult{}, err
 	}
-	return dest, true, false, nil
+	res.Wrote = true
+	return res, nil
 }
 
 // retryHint 是「想把 PATH 集成也做上，该重跑哪条命令」的写法。

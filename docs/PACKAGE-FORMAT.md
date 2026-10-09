@@ -118,6 +118,7 @@ launch:
                                   #   requires 为空时 = 平台数据目录/<简称>
 ├── bin/
 │   ├── gpm                       # 自动拷进来，保证之后 list/uninstall 可用
+│                                 #   家里已有一份时比版本（v3.11 起，D41）：这份更新才替换
 │   ├── ad                        # 终端启动器（Windows 上是 ad.cmd）
 │   ├── cot / tdp                 # 工具链自举的产物（gpm 不记账、卸载不碰）
 │   └── activate* / env-cot*      # cot 的 activate 框架，同上
@@ -159,7 +160,7 @@ launch:
 | 平台 | 副作用 | 卸载时 |
 |---|---|---|
 | 全平台 | `<家>/bin/<cmd>` 启动器（Windows 上是 `<cmd>.cmd`） | 删除 |
-| 全平台 | `<家>/bin/gpm`（Windows 上是 `gpm.exe`）自拷贝 | 账本为空时删除；但环境里有 `COT_HOME` / `TDP_HOME`（激活过的 shell）时留着 |
+| 全平台 | `<家>/bin/gpm`（Windows 上是 `gpm.exe`）自拷贝 | 家里已有一份时比一次版本（v3.11、D41）：这份严格更新才替换并记账，否则留着且不记账。账本为空时删除；但环境里有 `COT_HOME` / `TDP_HOME`（激活过的 shell）时留着 |
 | 全平台 | 入口：`<家>/<payload 顶层名>`（v3.6；v3.5 是 `<家>/lib/<id>_<ver>_<os>_<arch>/`） | 整份删除（账本 `dir`） |
 | macOS | `~/Applications/<name>.app` 软链（进启动台 / Spotlight） | 删除 |
 | Linux | `~/.local/share/applications/<id>.desktop`（遵守 `$XDG_DATA_HOME`） | 删除 |
@@ -221,10 +222,13 @@ Windows 用 `%USERPROFILE%`）。没给 `--default-dir`、清单也没有 `requi
 **没有 `--dir` 这一项**——让 gpm 自己按第 1 节的链去定。**烘进去的只是默认值**：用户仍可用 `COT_HOME` / `TDP_HOME`
 环境变量或 `--dir` 覆盖。
 
-`<bin>/gpm` 已经存在时**不覆盖**：那是用户自己的 gpm，装完只提示一句，
-也不计入账本、卸载时不动它（[`DESIGN.md`](DESIGN.md) D29）。反过来，**gpm 自己拷进去的那一份**
-（账本 `self`）在卸载到最后一个包时删除——除非环境里有 `COT_HOME` / `TDP_HOME`：那说明
-用户正在一个激活过的 shell 里，这个家归工具链管，那份 gpm 留着（想删就先 `unset` 再卸）。
+`<bin>/gpm` 已经存在时**比一次版本**（v3.11、D41）：先跑它的 `--version` 把版本问出来，
+包里这份**严格更新**才替换掉它（并计入账本 `self`），同版本 / 更旧 / 问不出来（不是可
+执行文件、跑不起来、超时、输出认不出）一律原样留着、只提示一句，也不计入账本；
+`--force` 无视版本直接覆盖。替换**不看那个文件是谁放的**（[`DESIGN.md`](DESIGN.md) D41、
+R19）。反过来，**gpm 自己拷进去的那一份**（账本 `self`）在卸载到最后一个包时删除——
+除非环境里有 `COT_HOME` / `TDP_HOME`：那说明用户正在一个激活过的 shell 里，这个家归
+工具链管，那份 gpm 留着（想删就先 `unset` 再卸）。
 
 ## 8. CLI（本版）
 
