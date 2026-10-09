@@ -1,4 +1,4 @@
-# gpm — GUI Package Manager 设计文档（v3.3）
+# gpm — GUI Package Manager 设计文档（v3.4）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -6,6 +6,8 @@
 v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**一次装一个产品的安装器**：解压一个 zip、跑里面的脚本，装完终端能敲、图标能点、能干净卸载。
 
 **v3.3 改的是名字与"装到哪儿"**：产品从 `cpi` 改名 **gpm（GUI Package Manager）**；`~/ad` 这个硬编码的安装根被删掉——**装到哪儿是打包方/安装器的决定**（`gpm pack --default-dir` 把它烘进 `install.sh`/`install.cmd`，AI Desk 用的是 `~/ad`），gpm 自己只认 `--dir` > `$GPM_HOME` > 当前目录。顺带补掉一处真实风险：`<bin>/gpm` 已经存在时不再覆盖（原来拿旧包安装会把新版 gpm 悄悄降级）。名字的由来、以及"为什么叫 manager 不算撒谎"见 §0.5。
+
+**v3.4 补的是 v3.3 留下的那个洞（O11）**：删掉 `~/ad` 之后，用户在新终端里敲 `gpm list` 会落到**当前目录**——因为 `GPM_HOME` 只活在 `install.sh` 那一行里，shell 里并没有它。按用户给的布局原则（**带 GUI 的应用放在指定的目录下；没有图形界面的小东西放在它下面的 `bin/`；gpm 自己也一样**），`<家目录>/bin/gpm` 这个位置本身就把家目录说出来了，于是优先级在 `$GPM_HOME` 与"当前目录"之间补了一档 `RootFromSelf()`：**从 gpm 自己在哪儿推断**。不需要新状态、也不需要 shell 帮忙记（见 D21、§2.3、§0.3.4）。
 
 v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四屏"**全部退出范围**，理由与保留价值记在 §7 附录。
 
@@ -23,7 +25,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 |---|---|---|
 | **D19** | **范围 = GUI 应用的安装器**。一次安装一个 `id`，但**账本是多包的**：同一个 `<GPM_HOME>` 下可以并排装好几个应用，各占自己的 `lib/<id>_…` 与 `bin/<cmd>`（见 A3）。不做多应用清单、不做计划算法、不做镜像表/版本源/断点续传/离线 store，**也不抓取、不升级**（那是 `apt` 的活，见 §0.5）。**图形安装器暂缓**（原 D13 的 Wails 四屏不在首版范围）。 | 本项目 |
 | **D20** | **分发形态 = zip 自带 gpm**。产物是一个 `<id>-<version>-<os>-<arch>.zip`，内含 `install.sh`（mac/Linux）/ `install.cmd`（Windows）+ `gpm` + `manifest.yaml` + `payload/` + `SHA256SUMS`。用户解压后运行其中一个，脚本只做三行 bootstrap。 | 本项目 |
-| **D21** | **安装根由安装器决定，gpm 不发明默认值**：优先级 `--dir` > `$GPM_HOME` > **当前目录**。打包方用 `gpm pack --default-dir ~/ad` 把该装到哪儿烘进 `install.sh`/`install.cmd`（AI Desk 就是这么用的）。`<GPM_HOME>` 同时是应用家目录与 gpm 自己的目录，不拆成两个。 | 本项目 |
+| **D21** | **安装根由安装器决定，gpm 不发明默认值**：优先级 `--dir` > `$GPM_HOME` > **从 gpm 自己的位置推断**（`RootFromSelf()`，v3.4）> **当前目录**。打包方用 `gpm pack --default-dir "~/ad"` 把该装到哪儿烘进 `install.sh`/`install.cmd`（AI Desk 就是这么用的）。`<GPM_HOME>` 同时是应用家目录与 gpm 自己的目录，不拆成两个。 | 本项目 |
 | **D22** | **输入契约**：一个目录或一个 zip，里面有 `manifest.yaml` + `payload/` + `SHA256SUMS`。没有别的输入形式。 | 本项目 |
 | **D23** | **校验**：`SHA256SUMS` 必须覆盖 `payload/` 下每一个常规文件；对不上即拒绝安装。**缺失 `SHA256SUMS` 时警告后继续**，并把本次安装记为 `unverified`（`gpm list` 会显示）。`--skip-verify` 只用于调试。 | 沿用 A2 |
 | **D24** | **macOS 应用必须以 `.app` 形态落地**：上游给了就用（`entry.darwin.bundle`）；上游只发裸可执行文件时由 gpm 合成最小外壳。 | 沿用 D18。**合成外壳这一半本版尚未实现**，见 §2.7、§2.13 |
@@ -83,9 +85,17 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 |---|---|
 | 名字：`cpi`（Cross Platform Installer）→ **`gpm`（GUI Package Manager）** | 见 §0.5。名字应当自证：它装的是带 GUI 的应用，做的是"装/卸/列/查/打包"，**不做抓取与升级**——这正是 `dpkg` 与 `apt` 的分工。`cpi` 只说了"跨平台"，没说装什么 |
 | 模块路径 `github.com/qiuzhanghua/cpi-go` → **`github.com/qiuzhanghua/gpm-go`**；`cmd/cpi` → `cmd/gpm`；`CPI_HOME` → `GPM_HOME`；`--cpi` → `--gpm` | 全仓 277 处命中、21 个文件。词形普查确认过没有假阳性（不存在 `scpi`/`recipient` 这类词），所以三条替换（`cpi`/`CPI`/`Cpi`）就够了 |
-| 安装根：硬编码 `~/ad` → **`--dir` > `$GPM_HOME` > 当前目录**；新增 **`gpm pack --default-dir`** 把这个值烘进生成的 `install.sh`/`install.cmd` | 见 §2.1、§2.15。`~/ad` 是 AI Desk 的缩写，把它写死在通用工具里，等于让每个用户都继承这个项目的私事。装到哪儿是打包方的决定，gpm 只负责执行 |
+| 安装根：硬编码 `~/ad` → **`--dir` > `$GPM_HOME` > 当前目录**；新增 **`gpm pack --default-dir`** 把这个值烘进生成的 `install.sh`/`install.cmd` | 见 §2.1、§2.15。`~/ad` 是 AI Desk 的缩写，把它写死在通用工具里，等于让每个用户都继承这个项目的私事。装到哪儿是打包方的决定，gpm 只负责执行。**（v3.4 又在 `$GPM_HOME` 与"当前目录"之间补了一档，见 §0.3.4）** |
 | `<bin>/gpm`：**无条件覆盖** → **已经有一个就不装、不覆盖**，且不计入账本（卸载时也就不删它） | 见 §2.4。原来 `installSelf` 无条件执行，而全仓没有任何版本比较——拿旧包安装就会把新版 gpm 悄悄降级。用户自己放在那儿的 gpm 更不该被我们删掉 |
 | 范围口径：**"单应用安装器"** → **"支持多包，一次装一个"** | 见 A3。代码从来就是按多包写的，文档却一直写着"一次只装一个"——v3.3 把文档改成代码的样子 |
+
+### 0.3.4 v3.3 → v3.4 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| 安装根优先级：`--dir` > `$GPM_HOME` > 当前目录 → **`--dir` > `$GPM_HOME` > 从 gpm 自己的位置推断 > 当前目录** | 见 D21、§2.3。v3.3 把 `~/ad` 删掉之后留了个洞：装完在新终端里敲 `gpm list` 会落到当前目录报"这里还没装东西"（真机实测，O11）。用户给的布局原则把它一句话解决了 |
+| 新增 `home.RootFromSelf()` | 布局规定带 GUI 的应用在 `<家目录>/lib`、非图形界面的小东西（gpm、终端启动器）在 `<家目录>/bin`，于是 `<家目录>/bin/gpm` 自证家目录。三条判据（所在目录叫 `bin`、文件名是 `gpm`、上一级有账本 `state.json`）拦住 `/usr/local/bin/gpm` 这类"看着像但不是"的位置 |
+| O11 关闭 | 不用 ⓑ（往 shell 里 `export GPM_HOME`）也不用 ⓒ（另存一处状态）——从自己的位置推断**不引入任何新状态**，与 D21"gpm 不发明默认值"不冲突：它不是发明，是**看出来** |
 
 ### 0.4 待确认假设
 
@@ -224,7 +234,9 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
                     ~/.zprofile / .zshrc / .profile
 ```
 
-那个 `…` 就是 `gpm pack --default-dir` 烘进来的安装根（AI Desk 烘的是 `~` 展开后的 `$HOME/ad`）；打包方没指定时它就是 `.`，也就是"解压出来那个目录"。**gpm 自己没有任何出厂默认值**——它只认 `--dir` > `$GPM_HOME` > 当前目录这个顺序。
+那个 `…` 就是 `gpm pack --default-dir` 烘进来的安装根（AI Desk 烘的是 `~` 展开后的 `$HOME/ad`）；打包方没指定时它就是 `.`，也就是"解压出来那个目录"。**gpm 自己没有任何出厂默认值**——它只认 `--dir` > `$GPM_HOME` > 从自己的位置推断 > 当前目录这个顺序（最后一档见 §2.3）。
+
+**装完之后还有一档**：`install.sh` 只在装的那一次把 `--dir` 传进来，之后用户在新终端里敲 `gpm list` 时 `GPM_HOME` 并不在环境里。于是 gpm 看一眼**自己现在在哪儿**——`<GPM_HOME>/bin/gpm` 这个位置本身就说明了家目录在哪（`home.RootFromSelf()`，§2.3）。
 
 一条铁律：**`internal/` 不知道 GUI 存在**。将来加图形壳（若加）时，它和 `cmd/gpm` 走同一条 `install.Install`。
 
@@ -234,7 +246,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 
 ```
 cmd/gpm/            CLI 入口：参数解析、子命令分发、中文输出
-internal/home/      安装根解析（--dir > $GPM_HOME > 当前目录）与各子目录
+internal/home/      安装根解析（--dir > $GPM_HOME > 从自己的位置推断 > 当前目录）与各子目录
 internal/manifest/  manifest.yaml 的解析与平台校验
 internal/stage/     解包（目录或 zip）与 sha256 校验
 internal/pack/      反向：把装配目录打成可分发的 zip（install.sh/install.cmd/gpm/SHA256SUMS）
@@ -255,16 +267,20 @@ tools/fixture/      造测试分发包的脚本（不属于产品；产品路径
 
 ```
 <GPM_HOME>/                     装到哪儿由安装器传进来（D21）
-├── bin/
+├── bin/                        没有图形界面的小东西
 │   ├── gpm                     gpm 自己的副本（D29）
 │   └── <cmd>                   终端启动器（D25）
-├── lib/
+├── lib/                        带 GUI 的应用
 │   └── <id>_<version>_<os>_<arch>/
 │       └── <Name>.app          仅 macOS：上游给的或 gpm 合成的
 ├── staging/                    解包中转；每次安装一个 unpack-<纳秒> 目录，defer 删除
 └── state.json                  账本
 ```
 
+- **`bin/` 与 `lib/` 的分界是"有没有图形界面"，不是"是不是可执行文件"**：带 GUI 的应用住在 `lib/<id>_<version>_<os>_<arch>/` 里（用户指定的目录之下），没有图形界面的小东西——终端启动器与 gpm 自己——住在 `bin/` 下。这条分界不只是整洁，它还是 **`RootFromSelf()` 的依据**（见下）。
+- **`RootFromSelf()`：gpm 从"自己在哪儿"反推家目录**（v3.4）。`install.sh` 只在安装那一次把 `--dir` 传进来；之后用户在新终端里敲 `gpm list` 时 `GPM_HOME` 并不在环境里，于是落到"当前目录"——`gpm list` 会报"这里还没装东西"（O11，真机实测过）。可既然布局把 gpm 自己固定放在 `<GPM_HOME>/bin/gpm`，**这个位置本身就在说家目录是它的上一级**。判据三条，缺一不可：① 可执行文件所在目录正好叫 `bin`；② 文件名正好是 `gpm`（Windows 上 `gpm.exe`）；③ 上一级里有账本 `state.json`。第三条是专门用来挡住 `/usr/local/bin/gpm` 这类"恰好也叫 bin、但上一级不是 gpm 的家"的位置的。
+- **这不违反 D21。** D21 说的是"gpm 不**发明**默认值"——从自己的位置推断不是发明，是**看出来**：它不引入任何新状态（不像把根另存一个文件），也不要求 shell 帮忙记着（不像往 PATH 标记块里塞 `export GPM_HOME`）。真正决定装到哪儿的仍然是安装器，推断只在"用户装完之后随手敲 gpm"这个场景里替他把根找回来。
+- **只有"一份真正的家"会被推断出来**：包里那个 `./gpm` 解压在任意目录（不在 `bin/` 下）时推断不出来，也不该推断——它的活是照着 `--dir` 干活。
 - **没有 `store/`**：v2 的内容寻址存储在单应用场景下是过度设计（§0.3）。
 - **`staging/` 必须在 `<GPM_HOME>` 之下**：只有同一文件系统内的 `rename` 才是原子的。
 - `state.json` 用 **临时文件 + rename** 写入，保证不会读到写坏的账本。
@@ -296,7 +312,7 @@ launch:
 ### 2.5 安装流水线
 
 ```
-0. 解析 --dir / $GPM_HOME / 当前目录，建好骨架          ← Ensure()
+0. 解析 --dir / $GPM_HOME / 自己的位置 / 当前目录，建好骨架   ← Ensure()
 1. 解包到 <GPM_HOME>/staging/unpack-<纳秒>              ← stage.Materialize（目录直接拷，zip 带越界防护）
 2. 校验 payload/ 下每个文件                             ← stage.VerifySums
    └ 没有 SHA256SUMS → 警告 + verified=false，继续
@@ -733,7 +749,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失 | e2e |
 | 运行中检查 | 纯函数表驱动：`/a/b` 不匹配 `/a/bc`、只认路径边界、`" (deleted)"` 幽灵照认、符号链接两种写法都收、空 `dir` 不匹配任何东西；darwin 的 `pgrep` 模式**恰好**锚在 argv[0]；Linux 用假 `/proc` 造四种 pid（正主 / 只有 argv[0] 的 AppImage / 幽灵 / 无关）；真起一个进程、**把它删掉**，断言仍认得出 | `internal/proc`（三平台） |
 | 拦截语义 | 隔离 `HOME` 后真装一次、真把假应用跑起来，再装第二次 → 必须拒绝且**账本与包目录一个字没动**；`--force` → 放行且有警告；卸载同理；应用不在跑时不许误拦 | `internal/install` |
-| 安装根与 `--default-dir` | `home.Resolve` 的三档优先级（`--dir` > `$GPM_HOME` > 当前目录）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`、留空时是 `.`（不凭空编绝对路径）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
+| 安装根与 `--default-dir` | `home.Resolve` 的四档优先级（`--dir` > `$GPM_HOME` > **从自己的位置推断** > 当前目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有 `state.json` / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`、留空时是 `.`（不凭空编绝对路径）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
 | 跨平台 | CI 矩阵 `{ubuntu,macos,windows}` 真跑单测；`{darwin,linux,windows} × {amd64,arm64}` 交叉编译 | §2.16 |
 | 静态检查 | `go vet` | 全仓 |
 
@@ -768,7 +784,9 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 
 **尚未验证**：`direct` 模式在真实长驻应用上的行为；中断（kill -9）注入；`.app` 外壳合成（代码未实现）；Linux/Windows 上的**人工**体验（CI 覆盖的是测试断言，不是"人对不对得上眼"）；`internal/proc` 的 Windows 与 Linux 实现只在 CI 的真 runner 上证过，本机没跑过真进程（macOS 那条是真跑了的）。
 
-**v3.3（改名 + 安装根解耦）的真机验证（2026-10-09，macOS）**：用 `gpm 0.2.0-local` 重新打包 AI Desk，真机上依次跑过——① 用改名前的 `cpi` 卸载干净（`~/ad` 只剩骨架、三处标记块归零）；② 用新包自带的 gpm 从零装上 0.2.0（`bin/gpm`、`bin/ad`、`~/Applications` 软链、三处标记块、账本 `self` 都自洽）；③ `~/ad/bin/ad` 真的把 GUI 拉起来了（应用日志 `version=0.2.0`）；④ **故意拿一个内嵌旧 gpm 的 0.1.0 包覆盖安装**：覆盖流程正常走完，并打出「`<bin>/gpm` 已经有一个 gpm，这次没覆盖它」，`~/ad/bin/gpm` 的 sha256 前后一致——**D29 没有把新 gpm 降级**；⑤ 包里的 `install.sh` 也在沙箱根里单独跑通过一次。仍然没验证的：Linux / Windows 的真机（只到 CI 断言），以及下面 O11。
+**v3.3（改名 + 安装根解耦）的真机验证（2026-10-09，macOS）**：用 `gpm 0.2.0-local` 重新打包 AI Desk，真机上依次跑过——① 用改名前的 `cpi` 卸载干净（`~/ad` 只剩骨架、三处标记块归零）；② 用新包自带的 gpm 从零装上 0.2.0（`bin/gpm`、`bin/ad`、`~/Applications` 软链、三处标记块、账本 `self` 都自洽）；③ `~/ad/bin/ad` 真的把 GUI 拉起来了（应用日志 `version=0.2.0`）；④ **故意拿一个内嵌旧 gpm 的 0.1.0 包覆盖安装**：覆盖流程正常走完，并打出「`<bin>/gpm` 已经有一个 gpm，这次没覆盖它」，`~/ad/bin/gpm` 的 sha256 前后一致——**D29 没有把新 gpm 降级**；⑤ 包里的 `install.sh` 也在沙箱根里单独跑通过一次。仍然没验证的：Linux / Windows 的真机（只到 CI 断言）。
+
+**v3.4（从自己的位置推断家目录）的真机验证（macOS）**：把 `gpm 0.2.0-local` 放进 `~/ad/bin/gpm`（那儿本来就有），**不带 `--dir`、也不设 `GPM_HOME`** 直接敲 `~/ad/bin/gpm list` —— 它自己找回了 `~/ad`，列出 AI Desk 0.2.0，不再报"这里还没装东西"（这正是 v3.3 留给 O11 的那个洞）。`gpm where ai-desk` 同样正常。另外确认过：把同一个二进制放到一个不叫 `bin` 的目录里（`/tmp/gpm-dist/gpm`）时它不会乱认家，仍旧回落到当前目录。
 
 ---
 
@@ -784,7 +802,8 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **M5 签名与公证** | macOS Developer ID + 公证 + `xcrun stapler`；Windows 代码签名 | ⏸ **用户明确暂缓**（放弃 1，先做 2 和 3）；仍是真正的发布阻塞项（§5 R1） |
 | **M6 未做的两件** | 合成 `.app` 外壳（需先给 `manifest.Entry` 加 `bin`）；启动器名字冲突检查（R4） | 待做 |
 | **M7 运行中检查** | `internal/proc`（macOS/Linux/Windows 三平台）+ install/uninstall 的拦截闸 + `--force`；真机上拿 AI Desk 验过（拒绝、`--force`、无假阳性、幽灵进程仍在） | ✅ **已完成并实测** |
-| **M8 改名 + 装到哪儿解耦** | 全仓 `cpi`→`gpm`（模块路径、`GPM_HOME`、`cmd/gpm`、CI、tools）；`home.Resolve` 删掉 `~/ad` 硬编码；`gpm pack --default-dir`；`<bin>/gpm` 已存在不覆盖；文档同步（§0.5、§0.3.3、§2.17） | ✅ **已完成**（本版） |
+| **M8 改名 + 装到哪儿解耦** | 全仓 `cpi`→`gpm`（模块路径、`GPM_HOME`、`cmd/gpm`、CI、tools）；`home.Resolve` 删掉 `~/ad` 硬编码；`gpm pack --default-dir`；`<bin>/gpm` 已存在不覆盖；文档同步（§0.5、§0.3.3、§2.17） | ✅ **已完成**（v3.3） |
+| **M9 从自己的位置推断家目录** | `home.RootFromSelf()`（三条判据）+ `Resolve` 多一档 + 四条新测试（含三种"看着像但不是"的反例）；真机验证不带 `--dir` 的 `gpm list`；文档同步（§0.3.4、§2.3、D21、O11 关闭） | ✅ **已完成**（v3.4） |
 
 ---
 
@@ -817,11 +836,11 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | O4 | 图形安装器（原 Wails 四屏）还做不做 | 用户 |
 | O5 | 是否需要"装完自动打开终端 / 自动启动一次应用"的引导 | 设计 |
 | O6 | 中断注入测试（kill -9）什么时候补 | 设计 |
-| O7 | gpm 自身如何升级（现在只会被新 zip 里的副本覆盖） | 用户 |
+| O7 | gpm 自身如何升级（D29 之后，装新包**既不会覆盖** `<bin>/gpm`，gpm 自己也没有升级命令——想升级得手工换掉那个文件） | 用户 |
 | O8 | 要不要做合成 `.app` 外壳（R8）——当前 AI Desk 有真 `.app`，所以不挡路 | 用户 |
 | O9 | 拦下来之后，要不要顺手提供"我来帮你退出它"（发 SIGTERM 再重试）？当前只说不做（§1.5） | 用户 |
 | O10 | 自动更新把 `.app` 换掉之后，**账本里的版本号与目录名会过期**（目录仍叫 `…_0.1.0_…`，里面已是 0.2.0）。要不要让 `gpm list` 从 `Info.plist` 现读一次真实版本 | 用户 |
-| O11 | **装完之后，`gpm` 自己不知道家在哪**：`GPM_HOME` 只活在 `install.sh` 那一行里（`--dir "${GPM_HOME:-$HOME/ad}"`），用户在新终端里敲 `gpm list` 时它不在环境里，于是按 §2.1 的规则落到**当前目录**，报「这里还没装东西」（真机实测过）。三条路：ⓐ 认了，让调用方一律带 `--dir`；ⓑ 在 PATH 标记块里顺手 `export GPM_HOME=<根>`（Windows 侧则是再写一个用户环境变量），卸载时一并撤掉——副作用表要加一行；ⓒ 让 gpm 把"上一次用的根"记在安装根之外（等于又发明一处状态，与 D21 相冲） | 用户 |
+| O11 | ~~**装完之后，`gpm` 自己不知道家在哪**~~ —— **已解决（v3.4）**：`GPM_HOME` 只活在 `install.sh` 那一行里，用户在新终端里敲 `gpm list` 时会落到**当前目录**报"这里还没装东西"（真机实测过）。用户的裁决：**带 GUI 的程序放到用户指定的目录下，非 GUI 的程序放到它下面的 `bin/`，gpm 自己也一样在 `bin/` 下，所以不用给它指定 HOME** | 已定（用户）：不认命（ⓐ）、也不往 shell 里塞 `export GPM_HOME`（ⓑ）、更不另存一处状态（ⓒ），而是从 `<家目录>/bin/gpm` 这个位置**看出来**——`RootFromSelf()`，见 §2.3、D21 |
 
 ---
 
@@ -830,7 +849,8 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 术语 | 含义 |
 |---|---|
 | gpm | 本产品：GUI Package Manager（§0.5）。名字里的 manager 对标 `dpkg`：装、卸、列、查、打包，**不抓取、不升级** |
-| `GPM_HOME` | 安装根。**gpm 没有出厂默认值**：`--dir` > `$GPM_HOME` > 当前目录；打包方可以用 `gpm pack --default-dir` 把它烘进 `install.sh`/`install.cmd`（AI Desk 烘的是 `~/ad`） |
+| `GPM_HOME` | 安装根。**gpm 没有出厂默认值**：`--dir` > `$GPM_HOME` > 从 gpm 自己的位置推断 > 当前目录；打包方可以用 `gpm pack --default-dir` 把它烘进 `install.sh`/`install.cmd`（AI Desk 烘的是 `~/ad`） |
+| `RootFromSelf` | 从 gpm 自己所在的位置反推安装根：`<家目录>/bin/gpm` 说明家目录是它的上一级（§2.3）。装完之后用户在新终端里随手敲 `gpm list` 靠的就是它 |
 | 分发包 | 那个 zip：`install.sh`/`install.cmd` + `gpm` + `manifest.yaml` + `payload/` + `SHA256SUMS`；由 `gpm pack` 产出（§2.15） |
 | 装配目录 | 打包的输入：只有 `manifest.yaml` + `payload/`，其余三样由 `gpm pack` 补齐 |
 | `gpm pack` | gpm 的打包子命令（§2.15）；发布路径上唯一被支持的打包方式 |

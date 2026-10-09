@@ -1,12 +1,13 @@
 package home
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// Resolve 的三档优先级：--dir > $GPM_HOME > 当前目录。
+// Resolve 的优先级：--dir > $GPM_HOME > 从自己的位置推断 > 当前目录。
 func TestResolvePriority(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -40,6 +41,7 @@ func TestResolvePriority(t *testing.T) {
 	// 这一条是 v3.3 的重点：gpm 不该自己发明 ~/ad 这样的默认值。
 	t.Run("两个都没给就落在当前目录", func(t *testing.T) {
 		t.Setenv("GPM_HOME", "")
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
 		h, err := Resolve("")
 		if err != nil {
 			t.Fatal(err)
@@ -61,6 +63,141 @@ func TestResolvePriority(t *testing.T) {
 		want := filepath.Join(wd, "sub", "dir")
 		if h.Root != want {
 			t.Fatalf("Root = %q，想要 %q", h.Root, want)
+		}
+	})
+}
+
+// stubSelf 把「gpm 现在在哪儿」换成给定答案。
+func stubSelf(t *testing.T, exe string, err error) {
+	t.Helper()
+	old := selfExecutable
+	selfExecutable = func() (string, error) { return exe, err }
+	t.Cleanup(func() { selfExecutable = old })
+}
+
+// fakeRoot 造一个"家目录已经建好"的样子：bin/gpm 与 state.json。
+func fakeRoot(t *testing.T, exeName string) (root string, exe string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir()) // macOS 的 /var → /private/var
+	if err != nil {
+		root = t.TempDir()
+	}
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe = filepath.Join(root, "bin", exeName)
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(`{"packages":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root, exe
+}
+
+// 这一条是 O11 的答案：<家目录>/bin/gpm 这个位置本身就把家目录说出来了，
+// 用户在新终端里敲 gpm list 不必带 --dir，也不必让 shell 记着 GPM_HOME。
+func TestResolveFromSelfLocation(t *testing.T) {
+	root, exe := fakeRoot(t, "gpm")
+	stubSelf(t, exe, nil)
+	t.Setenv("GPM_HOME", "")
+
+	h, err := Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Root != root {
+		t.Fatalf("Root = %q，想要从自己的位置推断出的 %q", h.Root, root)
+	}
+}
+
+func TestResolveSelfLocationIsTheLastResort(t *testing.T) {
+	_, exe := fakeRoot(t, "gpm")
+	stubSelf(t, exe, nil)
+
+	t.Run("--dir 仍然压过推断", func(t *testing.T) {
+		other := t.TempDir()
+		h, err := Resolve(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != other {
+			t.Fatalf("Root = %q，想要 --dir 给的 %q", h.Root, other)
+		}
+	})
+
+	t.Run("$GPM_HOME 仍然压过推断", func(t *testing.T) {
+		other := t.TempDir()
+		t.Setenv("GPM_HOME", other)
+		h, err := Resolve("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != other {
+			t.Fatalf("Root = %q，想要 $GPM_HOME 给的 %q", h.Root, other)
+		}
+	})
+}
+
+// 三条判据各自都能否掉一个「看着像但不是」的位置。
+func TestRootFromSelfRejectsLookalikes(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("所在目录不叫 bin", func(t *testing.T) {
+		root, exe := fakeRoot(t, "gpm")
+		moved := filepath.Join(root, "gpm-dist", "gpm")
+		if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(exe, moved); err != nil {
+			t.Fatal(err)
+		}
+		stubSelf(t, moved, nil)
+		t.Setenv("GPM_HOME", "")
+		if _, ok := RootFromSelf(); ok {
+			t.Fatal("bin 之外的 gpm 不该被当成家目录的线索")
+		}
+		h, err := Resolve("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != wd {
+			t.Fatalf("Root = %q，想要回落到当前目录 %q", h.Root, wd)
+		}
+	})
+
+	t.Run("文件名不叫 gpm", func(t *testing.T) {
+		_, exe := fakeRoot(t, "ad")
+		stubSelf(t, exe, nil)
+		if _, ok := RootFromSelf(); ok {
+			t.Fatal("启动器不该被当成 gpm 自己")
+		}
+	})
+
+	// 这条是给 /usr/local/bin/gpm 这类地方准备的：目录确实叫 bin，
+	// 但上一级没有 gpm 的账本 —— 那不是它的家。
+	t.Run("上一级没有 state.json", func(t *testing.T) {
+		tmp := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tmp, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		exe := filepath.Join(tmp, "bin", "gpm")
+		if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stubSelf(t, exe, nil)
+		if _, ok := RootFromSelf(); ok {
+			t.Fatal("没有账本的地方不该被当成家目录")
+		}
+	})
+
+	t.Run("取不到自己的路径", func(t *testing.T) {
+		stubSelf(t, "", errors.New("无可奉告"))
+		if _, ok := RootFromSelf(); ok {
+			t.Fatal("连自己在哪都不知道时不该猜")
 		}
 	})
 }

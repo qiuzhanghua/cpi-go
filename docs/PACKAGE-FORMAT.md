@@ -7,14 +7,15 @@
 
 | # | 问题 | 裁决 |
 |---|---|---|
-| 1 | gpm 的家目录（安装根）怎么定 | **gpm 不发明默认值**：`--dir` > 环境变量 `GPM_HOME` > 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/ad`）。gpm 的全部内部结构（`bin/`、`lib/`、`state.json`、`staging/`）都住在安装根里。 |
+| 1 | gpm 的家目录（安装根）怎么定 | **gpm 不发明默认值**：`--dir` > 环境变量 `GPM_HOME` > **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/ad`）。gpm 的全部内部结构（`bin/`、`lib/`、`state.json`、`staging/`）都住在安装根里。 |
 | 2 | gpm 怎么到用户手上 | **分发包自带 gpm**：zip 里同时放 gpm 二进制与几行 bootstrap 脚本，用户解压后跑脚本即可，不需要预装任何东西。 |
 | 3 | gpm 的范围 | **GUI 应用的安装器**：只收录带图形界面的程序；一个 zip 装一个应用，**账本本身支持多包**。不做纯 CLI 工具、不做镜像表/版本源、**没有一行网络代码**——不抓取、不升级，对标 `dpkg` 而不是 `apt`（见 [`DESIGN.md`](DESIGN.md) §0.5）。 |
 
 裁决 1 的直接好处：**卸载 = 删掉一个目录**，整个安装根可以整体搬走或放进 U 盘。
 
 裁决 1 的代价（明确接受）：**gpm 自己不知道该装到哪儿**。用户在终端里直接敲
-`gpm install .` 而没有任何 `--dir` / `GPM_HOME` 时，它会装到**当前目录**。
+`gpm install .` 而没有任何 `--dir` / `GPM_HOME`、且 gpm 二进制不在某个 `<家目录>/bin/gpm`
+的位置上时，它会装到**当前目录**。
 要让它有合理默认值，就得由打包方用 `--default-dir` 说清楚——这正是
 `install.sh` / `install.cmd` 存在的主要理由。
 
@@ -109,6 +110,13 @@ launch:
 除这四样之外，安装根下不放别的东西。`<GPM_HOME>` 本身是什么路径由调用方决定
 （第 1 节），安装布局与它无关。
 
+`bin/` 与 `lib/` 的分界是**有没有图形界面**，不是"是不是可执行文件"：带 GUI 的应用
+住在 `lib/<id>_<version>_<os>_<arch>/`，没有图形界面的小东西——终端启动器与 gpm
+自己——住在 `bin/`。这条分界也是 gpm 能"从自己在哪儿反推家目录"的依据（第 1 节）：
+用户在新终端里敲 `gpm list` 时环境里并没有 `GPM_HOME`，`<家目录>/bin/gpm` 这个位置
+把它找回来——判据是所在目录正好叫 `bin`、文件名正好是 `gpm`、且上一级有 `state.json`，
+所以 `/usr/local/bin/gpm` 这种地方不会被误认。
+
 包目录名固定为 `<id>_<version>_<os>_<arch>`。**重装是覆盖式的、不是并存的**：
 同一个 `id` 再装一次，gpm 先按卸载流程删掉旧包目录与启动器，再落新的
 （所以"升级"中间有一小段窗口期旧版本已经不在了——本版接受这个代价，
@@ -196,7 +204,8 @@ gpm env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时�
 gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
 ```
 
-`GPM_HOME` 的解析优先级：`--dir` > 环境变量 `GPM_HOME` > 当前目录。
+`GPM_HOME` 的解析优先级：`--dir` > 环境变量 `GPM_HOME` > 从 gpm 自己的位置推断
+（二进制正好在 `<家目录>/bin/gpm`、且上一级有 `state.json` 时，家目录就是上一级）> 当前目录。
 
 `--force` 只绕过"那个应用正在运行"这一道闸（第 5 节末），不是忽略一切错误的万能开关。
 
@@ -207,4 +216,4 @@ gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.3：gpm 之名 + 安装根由安装器传入 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.4：gpm 之名 + 安装根由安装器传入 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。

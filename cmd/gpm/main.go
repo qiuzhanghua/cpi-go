@@ -90,7 +90,7 @@ func main() {
 
 func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
-	dir := fs.String("dir", "", "装到哪个家目录（默认 $GPM_HOME，再默认当前目录）")
+	dir := fs.String("dir", "", "装到哪个家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
 	yes := fs.Bool("yes", false, "不询问，直接做 PATH 集成")
 	noPath := fs.Bool("no-path", false, "完全不碰 PATH")
 	skip := fs.Bool("skip-verify", false, "跳过 SHA256SUMS 校验（只用于调试）")
@@ -117,7 +117,7 @@ func cmdInstall(args []string) error {
 
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
+	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
 	force := fs.Bool("force", false, "要删的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm uninstall <id> [选项]")
@@ -135,7 +135,7 @@ func cmdUninstall(args []string) error {
 
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
+	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm list [选项]")
 		fs.PrintDefaults()
@@ -148,7 +148,7 @@ func cmdList(args []string) error {
 
 func cmdWhere(args []string) error {
 	fs := flag.NewFlagSet("where", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
+	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm where <id> [选项]")
 		fs.PrintDefaults()
@@ -199,7 +199,7 @@ func cmdPack(args []string) error {
 
 func cmdEnv(args []string) error {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（默认 $GPM_HOME，再默认当前目录）")
+	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm env [选项]   # 打印把 bin/ 加进 PATH 的 shell 片段")
 		fs.PrintDefaults()
@@ -227,8 +227,15 @@ func usage(w *os.File) {
   gpm env
   gpm version
 
-家目录按 --dir > $GPM_HOME > 当前目录 的顺序确定。
+家目录按 --dir > $GPM_HOME > 从 gpm 自己的位置推断 > 当前目录 的顺序确定。
 装到哪儿通常是安装器（install.sh / install.cmd）传进来的，那个值由
 gpm pack --default-dir 烘进脚本；gpm 自己只认上面这个顺序。
+
+「从 gpm 自己的位置推断」是给装完之后用的：布局规定带 GUI 的应用住在
+<家目录>/lib，而 gpm 与终端启动器这类没有图形界面的小东西住在 <家目录>/bin。
+于是 <家目录>/bin/gpm 这个位置本身就把家目录说出来了 —— 用户在新终端里
+敲 gpm list / gpm where / gpm uninstall 时不必带 --dir，也不必让 shell
+一直替 gpm 记着 GPM_HOME。判据要求所在目录正好叫 bin、文件名正好是 gpm、
+且上一级有账本 state.json，免得把 /usr/local/bin/gpm 这种地方误当成家目录。
 `, version)
 }
