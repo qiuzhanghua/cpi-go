@@ -19,6 +19,7 @@ import (
 	"github.com/qiuzhanghua/cpi-go/internal/integrate"
 	"github.com/qiuzhanghua/cpi-go/internal/ledger"
 	"github.com/qiuzhanghua/cpi-go/internal/manifest"
+	"github.com/qiuzhanghua/cpi-go/internal/proc"
 	"github.com/qiuzhanghua/cpi-go/internal/stage"
 )
 
@@ -28,6 +29,7 @@ type Options struct {
 	Yes        bool      // 不询问，直接做 PATH 集成
 	NoPath     bool      // 完全跳过 PATH 集成
 	SkipVerify bool      // 跳过 SHA256SUMS 校验（只用于调试）
+	Force      bool      // 应用正在运行也照做（覆盖安装与卸载都用得上）
 	In         io.Reader // 默认 os.Stdin
 	Out        io.Writer // 默认 os.Stdout
 }
@@ -95,6 +97,9 @@ func Install(src string, opt Options) error {
 		return err
 	}
 	if prev := led.Find(m.ID); prev != nil {
+		if err := checkNotRunning(prev, opt.Force, "重新运行一次 cpi install", out); err != nil {
+			return err
+		}
 		fmt.Fprintf(out, "检测到已装过的 %s %s，先卸掉旧版本。\n", prev.Name, prev.Version)
 		if err := remove(h, led, prev.ID, out); err != nil {
 			return err
@@ -278,7 +283,7 @@ func Where(dir, id string, out io.Writer) error {
 }
 
 // Uninstall 回放账本，把某个包留下的东西全部摘掉。
-func Uninstall(dir, id string, out io.Writer) error {
+func Uninstall(dir, id string, force bool, out io.Writer) error {
 	if out == nil {
 		out = os.Stdout
 	}
@@ -290,8 +295,12 @@ func Uninstall(dir, id string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if led.Find(id) == nil {
+	p := led.Find(id)
+	if p == nil {
 		return fmt.Errorf("账本里没有 %q", id)
+	}
+	if err := checkNotRunning(p, force, "重新运行一次 cpi uninstall", out); err != nil {
+		return err
 	}
 	if err := remove(h, led, id, out); err != nil {
 		return err
@@ -374,6 +383,54 @@ func remove(h *home.Home, led *ledger.Ledger, id string, out io.Writer) error {
 	}
 	led.Remove(id)
 	return nil
+}
+
+// checkNotRunning 在动一个已装应用的目录之前，先看看它是不是正开着。
+//
+// 返回错误时调用方必须停手。真让它过去会出两种事，见 internal/proc 的开头。
+//
+// 查不出来的时候不拦：宁可漏拦一次，也不要因为「不知道」把安装挡死 ——
+// 未来多一个平台、或者某个受限环境不让枚举进程，用户还能照常干活。
+func checkNotRunning(p *ledger.Package, force bool, again string, out io.Writer) error {
+	if p == nil || p.Dir == "" {
+		return nil
+	}
+	procs, err := proc.Find(p.Dir)
+	if err != nil {
+		fmt.Fprintf(out, "提示：没能确认 %s 是不是正在运行（%v），这次不拦。\n", p.Name, err)
+		return nil
+	}
+	if len(procs) == 0 {
+		return nil
+	}
+	if force {
+		fmt.Fprintf(out, "警告：%s 正在运行（%s），按 --force 继续。\n", p.Name, procsText(procs))
+		return nil
+	}
+	fmt.Fprintf(out, "\n%s 正在运行（%s），现在动它，它脚下的文件会被换掉或抽走。\n", p.Name, procsText(procs))
+	fmt.Fprintln(out, "它自己不会马上退出，但之后读到的资源、动态库、拉起的子进程都可能是另一份（版本混用）；")
+	fmt.Fprintln(out, "在 macOS 上还会留下一个幽灵进程：那个位置一直指着这个旧进程，你下次点图标只会把它唤到前台，拿不到新的。")
+	fmt.Fprintf(out, "请先退出 %s，再%s。\n", p.Name, again)
+	fmt.Fprintln(out, "确定不在乎（比如在脚本里批量处理），加 --force。")
+	return fmt.Errorf("%s 正在运行，没动手", p.Name)
+}
+
+// procsText 把进程列成给人看的一行。太多就截断：这里不需要完整清单。
+func procsText(procs []proc.Process) string {
+	const show = 3
+	var parts []string
+	for _, p := range procs {
+		if p.Exe != "" {
+			parts = append(parts, fmt.Sprintf("进程 %d：%s", p.PID, p.Exe))
+		} else {
+			parts = append(parts, fmt.Sprintf("进程 %d", p.PID))
+		}
+		if len(parts) == show && len(procs) > show {
+			parts = append(parts, fmt.Sprintf("共 %d 个", len(procs)))
+			break
+		}
+	}
+	return strings.Join(parts, "，")
 }
 
 // installSelf 把正在运行的 cpi 拷进 <CPI_HOME>/bin，保证之后 list/uninstall 还找得到它。

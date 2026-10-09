@@ -108,6 +108,11 @@ launch:
 （所以"升级"中间有一小段窗口期旧版本已经不在了——本版接受这个代价，
 换来的是一次只有一份 `lib/` 的简单状态）。
 
+**但动手之前要先查那个应用在不在跑**：包目录底下还有活着的进程时，覆盖安装与卸载
+都**拒绝执行**（一个字节都不动），并说明"它不会自己退出、之后读到的东西可能是另一份"；
+显式加 `--force` 才继续。理由与实现见 `DESIGN.md` §2.9.1。查不出来（平台不支持 / 没权限）时
+只提示、不拦。
+
 ## 6. 外部副作用（全部登记在 `state.json`）
 
 | 平台 | 副作用 | 卸载时 |
@@ -169,15 +174,17 @@ pause
 ## 8. CLI（本版）
 
 ```
-cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify]
+cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
 cpi list
 cpi where <id>
-cpi uninstall <id> [--dir PATH]
+cpi uninstall <id> [--dir PATH] [--force]
 cpi env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时用）
 cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
 ```
 
 `CPI_HOME` 的解析优先级：`--dir` > 环境变量 `CPI_HOME` > `~/ad`。
+
+`--force` 只绕过"那个应用正在运行"这一道闸（第 5 节末），不是忽略一切错误的万能开关。
 
 `cpi pack` 是**发布者**侧的（给自己 CI 用），不是终端用户用的；它的输出就是本文第 2 节那个 zip。
 

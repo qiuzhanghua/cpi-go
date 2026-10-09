@@ -94,6 +94,7 @@ func cmdInstall(args []string) error {
 	yes := fs.Bool("yes", false, "不询问，直接做 PATH 集成")
 	noPath := fs.Bool("no-path", false, "完全不碰 PATH")
 	skip := fs.Bool("skip-verify", false, "跳过 SHA256SUMS 校验（只用于调试）")
+	force := fs.Bool("force", false, "要换掉的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: cpi install <目录或 .zip> [选项]")
 		fs.PrintDefaults()
@@ -110,12 +111,14 @@ func cmdInstall(args []string) error {
 		Yes:        *yes,
 		NoPath:     *noPath,
 		SkipVerify: *skip,
+		Force:      *force,
 	})
 }
 
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	dir := fs.String("dir", "", "家目录（默认 $CPI_HOME，再默认 ~/ad）")
+	force := fs.Bool("force", false, "要删的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: cpi uninstall <id> [选项]")
 		fs.PrintDefaults()
@@ -127,7 +130,7 @@ func cmdUninstall(args []string) error {
 		fs.Usage()
 		return fmt.Errorf("需要且只需要一个参数：包 id")
 	}
-	return install.Uninstall(*dir, fs.Arg(0), os.Stdout)
+	return install.Uninstall(*dir, fs.Arg(0), *force, os.Stdout)
 }
 
 func cmdList(args []string) error {
@@ -214,10 +217,10 @@ func usage(w *os.File) {
 	fmt.Fprintf(w, `cpi %s —— 单应用安装器
 
 用法:
-  cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify]
+  cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
   cpi list
   cpi where <id>
-  cpi uninstall <id>
+  cpi uninstall <id> [--force]
   cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文件]
   cpi env
   cpi version

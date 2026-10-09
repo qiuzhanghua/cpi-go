@@ -1,4 +1,4 @@
-# cpi — Cross Platform Installer 设计文档（v3.1）
+# cpi — Cross Platform Installer 设计文档（v3.2）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -8,6 +8,8 @@ v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**单应用
 v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四屏"**全部退出范围**，理由与保留价值记在 §7 附录。
 
 **v3.1 把三平台的后半程补上了**：Windows 的 PATH（直写 `HKCU\Environment`）与开始菜单 `.lnk`（原生 COM）、Linux 的 `.desktop`，都已实现；打包从 shell 脚本搬进 `cpi pack` 子命令；两个仓库都接上 CI，**Linux 与 Windows 的路径由真 Linux / 真 Windows runner 跑测试来验证**。全文里"未实现 / 未在真机验证"的说法已按此更新（§0.3、§2.13、§3）。
+
+**v3.2 补的是一个"手太快"的坑**：cpi 原来会闷头覆盖安装或卸载，而**正在运行的应用被抽掉脚下的文件之后不会自己退出**——它会抓着一份已经被删掉的旧代码继续跑，之后按路径读到的资源、动态库、拉起的子进程却已经是另一份（版本混用）；macOS 上还会留下一个**幽灵进程**（`~/Applications` 的链接一直指着它，用户点图标只会把它唤到前台，永远拿不到新版本）。这条是拿真应用（AI Desk + 真 updater）在这台机器上跑出来的，见 §2.9、§3。现在动手之前先查，正在运行就用人话说明并拒绝，除非给 `--force`。
 
 ---
 
@@ -29,6 +31,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | **D28** | **账本 `state.json` 是所有外部副作用（PATH 块、`~/Applications` 链接、`.desktop`）的唯一真相**，卸载即回放删除。 | 沿用 D8 |
 | **D29** | **cpi 把自己也装进 `<CPI_HOME>/bin/cpi`**，保证装完之后 `cpi list` / `cpi uninstall` 还找得到它；卸载时一并删掉。 | 本项目 |
 | **D30** | **单版本覆盖式**：同一个 `id` 再装一次，先删旧的包目录与启动器再装新的，不做多版本共存。 | 沿用 D10 |
+| **D31** | **动手之前先查那个应用在不在跑**：覆盖安装与卸载都在删东西之前 `proc.Find` 一次；在跑就用人话说明后果并**拒绝**，只有显式给 `--force` 才继续。查不出来（平台不支持 / 没权限）**不拦**，只打印一行提示。 | 本项目。见 §2.9、§3 |
 
 ### 0.2 由上述决策推导出的硬性设计约束
 
@@ -62,6 +65,15 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | CI：无 → cpi-go 三平台测试 + 六平台交叉编译；ai-desk 三平台打包 | 见 §2.16。本机没有容器与虚拟机，多平台验证只能这么做 |
 
 **作废**：D1–D5（清单来源/落地方式/默认范围/网络/交付物）、D10 的镜像部分、D11（离线模式）、D12、D13 的 GUI 部分、D14 的"默认清单"、D16 的多应用 Profile。**保留**：D7（PATH 集成）、D8（账本/卸载）、D9（不提权）、D15–D18（启动器/应用形态）。逐条对照见 §7。
+
+### 0.3.2 v3.1 → v3.2 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| 覆盖安装 / 卸载：**闷头就删** → **先查应用在不在跑**（D31） | 见 §2.9。跑着的进程不会因为你删了它的文件就退出，它会抓着一份 unlinked 的旧代码继续跑，而按路径读到的资源/动态库/sidecar 已经是新的——**版本混用**。这条不是推演出来的，是真机上跑出来的（§3） |
+| `--force` 选项 | 见 §2.14。拦截必须能被绕过：脚本化批量处理、CI、以及"我就是想现在换掉它"都是正当需求。默认拦、显式放行，与 PATH 集成那道许可（D26）是同一个姿势 |
+| 新增 `internal/proc`（三平台） | 见 §2.9。macOS 走 `pgrep -f` 并锚定 argv[0]；Linux 读 `/proc/<pid>/{exe,cmdline}`；Windows 走 Toolhelp32 + `QueryFullProcessImageNameW`（原生 API，**不起 `tasklist`/`wmic` 子进程**，与 §2.7 的 COM 决定同理） |
+| **查不出来时不拦** | "查不到"不等于"在跑"。把误判当成拦路理由，会把所有脚本化安装都挡死；宁可漏拦（打印一行提示），不可误拦 |
 
 ### 0.4 待确认假设
 
@@ -118,6 +130,8 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-13 | 重装同一个 `id` 时覆盖式替换（先删旧、再装新） |
 | FR-14 | 非交互环境（无 TTY）不提问，直接跳过 PATH 集成并打印手工命令 |
 | FR-15 | 发布者侧：`cpi pack <装配目录>` 就地补齐 `install.sh`/`install.cmd`/`SHA256SUMS` 与 cpi 二进制并打成 zip（§2.15） |
+| FR-16 | 覆盖安装或卸载某个 `id` **之前**先查它是否正在运行；正在运行就用人话说明后果并拒绝，除非给了 `--force`（§2.9） |
+| FR-17 | 查不出来（平台不支持、或没有权限看进程）时只打印一行提示并**继续**——"查不到"不等于"在跑"，不能因此把安装拦下来 |
 
 ### 1.4 非功能需求
 
@@ -138,6 +152,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 - 不做应用商店式的多应用目录、镜像表、版本发现、静默升级。
 - 不做 `.dmg` / NSIS / `.deb` / `.rpm` / AppImage **安装器**的驱动（§2.12）。
 - 首版不做图形界面。
+- **不做"关掉正在运行的应用"**：cpi 只查、只说、只拒绝（或按 `--force` 放行），**绝不替用户 kill**。杀别人的进程比换掉它的文件更越界。
 
 ### 1.6 硬约束（已探明）
 
@@ -150,6 +165,8 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | C5 | Windows 资源管理器解压 zip 会丢 Unix 权限位 → `install.sh` 不能依赖 `+x` |
 | C6 | macOS 的 `.app` 里可能含符号链接，`zip` 必须加 `-y`；更稳的是 `ditto -c -k --keepParent` |
 | C7 | Windows 的 GUI 子系统 exe 从终端启动会**立即返回、不输出、不阻塞**——这是系统设计，不是缺陷 |
+| C8 | macOS 上**枚举进程不能依赖 `/bin/ps`**：它是 setuid root（`-rwsr-xr-x root wheel`），在受限/沙箱化的宿主里 exec 直接被拒（`Operation not permitted`）。`/usr/bin/pgrep`、`/usr/bin/lsof`、`/usr/bin/lsappinfo` 都不是 setuid，可以放心用 |
+| C9 | **删掉一个正在运行的进程脚下的文件，它不会退出**。进程抓着 inode 继续跑，`/proc/<pid>/exe`（Linux）或 `lsof` 的 `txt` 行（macOS）会显示一个已经不存在的路径、或带 `" (deleted)"` 后缀——所以"这个路径还在不在"不能拿来判断进程活没活，判断必须**纯字符串比对**，绝不能 `stat` |
 
 ---
 
@@ -193,13 +210,16 @@ internal/stage/     解包（目录或 zip）与 sha256 校验
 internal/pack/      反向：把装配目录打成可分发的 zip（install.sh/install.cmd/cpi/SHA256SUMS）
 internal/integrate/ 外部副作用：终端启动器、图形入口、PATH
 internal/ledger/    state.json 的读写
+internal/proc/      查某个包目录底下有没有活着的进程（§2.9.1）
 internal/install/   编排 + 回滚 + 卸载回放
 tools/fixture/      造测试分发包的脚本（不属于产品；产品路径已由 cpi pack 取代）
 ```
 
+`internal/proc/` 内部同样按平台拆文件：`proc.go`（路径前缀比对的纯函数，全平台）、`find_darwin.go`（`pgrep -f`）、`find_linux.go`（`/proc`）、`find_windows.go`（Toolhelp32）、`find_other.go`（返回"还不支持"，调用方打印提示后继续）。
+
 `internal/integrate/` 内部按平台拆文件：`integrate.go`（启动器与 PATH 标记块，全平台）、`entry.go`（图形入口路径与 `.desktop` 内容，纯函数）、`pathwin.go`（Windows PATH 的字符串处理，纯函数、可测）、`registry_windows.go` + `registry_stub.go`（注册表读写）、`shortcut_windows.go` + `shortcut_stub.go`（`.lnk`）。**平台无关的部分一律做成纯函数**，这样 Windows 的逻辑也能在 macOS 上被测试覆盖。
 
-依赖方向是单向的：`install` → {`home`, `manifest`, `stage`, `integrate`, `ledger`}，`integrate` → `ledger`，`pack` → {`manifest`, `stage`}，其余互相不依赖。
+依赖方向是单向的：`install` → {`home`, `manifest`, `stage`, `integrate`, `ledger`, `proc`}，`integrate` → `ledger`，`pack` → {`manifest`, `stage`}，其余互相不依赖。
 
 ### 2.3 磁盘布局
 
@@ -253,7 +273,10 @@ launch:
    └ 对不上         → 报出「清单 <a>，实际 <b>」，拒绝
 3. 读并校验 manifest.yaml                              ← manifest.Load + Validate(goos)
 4. payload/ 整体拷进 lib/<id>_<ver>_<os>_<arch>/        ← stage.CopyTree（保留权限位与符号链接）
-   └ 同 id 已存在 → 先按卸载流程删旧的（D30）
+   ├ 同 id 已存在 → 先查那个应用在不在跑（D31）          ← proc.Find（纯字符串比对，绝不 stat）
+   │  ├ 在跑且没给 --force → 说明后果后拒绝，就此打住（一个字都还没动）
+   │  └ 放行后按卸载流程删旧的（D30）
+   └ 拷进去
 5. 生成 bin/<cmd>                                      ← integrate.Launcher
 6. 建立图形入口                                        ← integrate.AppLink
 7. 请求许可后把 bin/ 接进 PATH                          ← integrate.InstallPathBlock
@@ -370,6 +393,8 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 ### 2.9 卸载与反向清理
 
+卸载与"覆盖安装时先删旧的"走的是同一条回放路径。**动手之前先过一道闸**（§2.9.1）。
+
 `uninstall <id>` 严格按账本回放：
 
 ```
@@ -388,6 +413,39 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 **验收标准（可测）**：`cpi list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 cpi 标记块（Windows 上是注册表 PATH 里没有 `<CPI_HOME>\bin`）；如果那个文件是 cpi 创建出来的且已经空了，文件本身也不在。
 
 `<CPI_HOME>` 目录**不删**——用户可能往里放了别的东西，删掉是越界。命令会明说"目录还在"。
+
+#### 2.9.1 动手之前：应用在不在跑（D31）
+
+**为什么必须要这一道闸。** 删掉一个正在运行的进程脚下的文件，它**不会退出**。进程抓着内核里的 inode 继续执行那份已经被 unlink 的旧代码，而此时同名路径下已经是新拷进去的另一份：
+
+| 会发生什么 | 后果 |
+|---|---|
+| 覆盖安装：先 `RemoveAll` 再拷新的 | 跑着的进程执行**旧**代码，但按路径 `dlopen`、读 `NSBundle` 资源、拉起 sidecar 时拿到的是**新**文件——**版本混用**。这次实测没崩，只是因为 Tauri 的 release 构建把前端资源编进了二进制；有 sidecar 或动态库的应用中招概率大得多 |
+| macOS 上更新 `.app` | 更糟：LaunchServices 把 `~/Applications/<Name>.app` 这条路径一直绑在那个旧 pid 上。**用户之后点图标只会把幽灵唤到前台，永远拿不到新版本**——除非手动 kill |
+| 卸载 | 同样的混用，外加"用户以为已经卸干净了，其实还有个进程在跑" |
+
+所以判断的依据是"**包目录底下有没有活着的进程**"，不是"文件在不在"。
+
+**怎么查（逐个平台）。** 都只做**纯字符串比对**：把进程报出来的可执行路径（以及 argv[0]）与账本里的 `dir` 前缀比，**绝不 `stat`**——幽灵进程的路径早就不存在了，`stat` 一下就会把最该抓到的情况漏掉。前缀同时收"账本里原样那个路径"和"`EvalSymlinks` 解析后那个路径"两份（macOS 上 `/var/...` 与 `/private/var/...` 是同一个地方的两个写法，进程报哪一种都可能）。
+
+| 平台 | 手段 | 注意 |
+|---|---|---|
+| macOS | `pgrep -f '^(<pkg>/|<pkg2>/…)'`，即**锚定在行首的 argv[0]** | 用 `pgrep` 而不是 `ps`：`/bin/ps` 是 setuid root，在受限环境里 exec 会被直接拒（C8）。`pgrep` 退出码 1 表示"没找到"，**不是**故障。锚定 `^` 是刻意的：另一个进程的命令行里"提到"这个路径不算命中（实测过），而幽灵进程的 argv[0] 仍是原路径，照样认得出 |
+| Linux | 读 `/proc/<pid>/exe`（readlink）与 `/proc/<pid>/cmdline` 的 argv[0] | 两个候选都要收：AppImage 自解压后 `exe` 指向 `/tmp/.mount_xxxx`，只有 argv[0] 认得原位置 |
+| Windows | Toolhelp32 快照 + `QueryFullProcessImageNameW` 取**完整路径** | 查完整路径而不是进程名（同名的 exe 可以有好几份）；与 §2.7 的 COM 决定同理，**不起 `tasklist`/`wmic` 子进程** |
+| 其它 | 直接返回"这个平台还不支持查进程" | 调用方打印提示后继续（FR-17） |
+
+**拦的时候说什么。** 不吓唬人、不甩术语，四句话说清"现在动它会怎样、你该做什么、不想听劝怎么办"：
+
+```
+<名字> 正在运行（进程 1844，/Users/q/ad/lib/ai-desk_0.2.0_darwin_arm64/…），现在动它，它脚下的文件会被换掉或抽走。
+它自己不会马上退出，但之后读到的资源、动态库、拉起的子进程都可能是另一份（版本混用）；
+在 macOS 上还会留下一个幽灵进程：那个位置一直指着这个旧进程，你下次点图标只会把它唤到前台，拿不到新的。
+请先退出 <名字>，再重新运行一次 cpi install。
+确定不在乎（比如在脚本里批量处理），加 --force。
+```
+
+**查不出来就不拦。** 平台不支持、没权限、命令不存在——一律只打印一行 `提示：没能确认 … 是不是正在运行（…），这次不拦。` 然后照常继续。宁可漏拦（用户自己会看到后果），不可误拦（那会把所有脚本化安装都挡死）。同理，**cpi 绝不替用户 kill**（§1.5）。
 
 ### 2.10 校验与供应链
 
@@ -448,8 +506,8 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 **安装侧：**
 
 ```
-cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify]
-cpi uninstall <id> [--dir PATH]
+cpi install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
+cpi uninstall <id> [--dir PATH] [--force]
 cpi list [--dir PATH]
 cpi where <id> [--dir PATH]
 cpi env [--dir PATH]        # 打印把 bin/ 加进 PATH 的 shell 片段
@@ -466,6 +524,7 @@ cpi pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--cpi 可执行文
 - 选项与位置参数**顺序无关**：`cpi install . --dir ~/ad` 与 `cpi install --dir ~/ad .` 等价（标准库 `flag` 遇到第一个位置参数就停止解析，所以入口处把选项重排了一次）。
 - 输出针对"看得懂中文但不一定懂 shell 的人"写：出错时给的是**哪个文件、哪个字段、怎么改**。
 - `cpi version` 的版本号是编译期注入的（`-ldflags "-X main.version=…"`），所以 `var version` 而不是 `const version`——`const` 注入不进去。
+- `--force`（install 与 uninstall 都有）绕过的是**同一道闸**：那个应用正在运行时照做。它**不是**"忽略所有错误"的通用开关——校验、路径安全、PATH 许可这些一概不变。默认拦、显式放行：绝大多数人是手滑点到了正在用的应用，少数人是脚本里明知故犯。（§2.9.1）
 
 ### 2.15 打包：`cpi pack`
 
@@ -546,6 +605,8 @@ cpi 自己的二进制与签名：
 | Windows `.lnk` | 写进去再读回来，比对 Target/Arguments/WorkingDir/Description；已有同名不覆盖 | `internal/integrate`（windows） |
 | Linux `.desktop` | 字段齐全、`Exec=` 指向启动器、遵守 `$XDG_DATA_HOME`；有 `desktop-file-validate` 就过一遍 | `internal/integrate`（linux） |
 | 集成副作用 | 隔离 `HOME` 后跑真实安装，断言目录、启动器、图形入口、账本、PATH 块；重复安装不叠加；卸载后逐项消失 | e2e |
+| 运行中检查 | 纯函数表驱动：`/a/b` 不匹配 `/a/bc`、只认路径边界、`" (deleted)"` 幽灵照认、符号链接两种写法都收、空 `dir` 不匹配任何东西；darwin 的 `pgrep` 模式**恰好**锚在 argv[0]；Linux 用假 `/proc` 造四种 pid（正主 / 只有 argv[0] 的 AppImage / 幽灵 / 无关）；真起一个进程、**把它删掉**，断言仍认得出 | `internal/proc`（三平台） |
+| 拦截语义 | 隔离 `HOME` 后真装一次、真把假应用跑起来，再装第二次 → 必须拒绝且**账本与包目录一个字没动**；`--force` → 放行且有警告；卸载同理；应用不在跑时不许误拦 | `internal/install` |
 | 跨平台 | CI 矩阵 `{ubuntu,macos,windows}` 真跑单测；`{darwin,linux,windows} × {amd64,arm64}` 交叉编译 | §2.16 |
 | 静态检查 | `go vet` | 全仓 |
 
@@ -560,6 +621,15 @@ cpi 自己的二进制与签名：
 - 负例：payload 改一个字节 → `sha256 对不上（清单 …，实际 …）` 拒绝；manifest 指向不存在的入口 → 拒绝。两次失败**都不留半成品**。
 - 卸载后 0 残留，连 cpi 自己创建出来的空 shell 配置文件都删掉了。
 
+**"正在运行就拦"在真机上实测过（同一个 AI Desk，`~/ad` 里装着 0.2.0，用 `~/ad/bin/ad` 拉起来，pid 1844）**：
+
+- `cpi install <zip> --dir ~/ad --yes` → 打印那四行人话后拒绝，退出码 1；`cpi uninstall ai-desk` → 同样拒绝。
+- 被拦之后 `cpi list` 仍报 0.2.0、`~/Applications/AI Desk.app` 符号链接原样——**确实一个字都没动**。
+- 加 `--force` → 先打一句警告再完整重装，退出码 0。
+- **假阳性测试**：起一个命令行里只是"提到"那个路径的 shell 循环，不加 force 的安装**照常成功**——证明 `^` 锚定 argv[0] 是有效的。
+- **幽灵进程确实存在**：更新后旧进程还活着，`lsof` 显示它的 `txt` 指向
+  `/private/var/folders/…/T/tauri_current_appKElfRw/current_app/Contents/MacOS/ai-desk`，而这个目录**已经被删掉**了（`ls` 报 `No such file or directory`）；`lsappinfo list` 里它仍占着 `bundle path="…/AI Desk.app"`、`Version="0.1.0"`，再 `open` 那个路径只会把它唤到前台。**这就是 D31 存在的全部理由。**
+
 **CI 已经抓出来的四个问题**（都不是靠读代码能发现的）：
 
 | # | 现象 | 根因 |
@@ -569,7 +639,7 @@ cpi 自己的二进制与签名：
 | 3 | 卸载后用户的 PATH 少了结尾一个分号 | `windowsPathValue` 插值前 `Trim`、`windowsPathRemove` 又只 join 非空条目 → 空条目被吃掉（§2.6） |
 | 4 | ai-desk 三平台构建全挂：`Found version mismatched Tauri packages` | `package.json` 写 `"^2"` 且仓库无 lockfile，CI 解析到的 `@tauri-apps/*` 比 `Cargo.lock` 里的 crate 新（§2.16、R9） |
 
-**尚未验证**：`direct` 模式在真实长驻应用上的行为；中断（kill -9）注入；`.app` 外壳合成（代码未实现）；Linux/Windows 上的**人工**体验（CI 覆盖的是测试断言，不是"人对不对得上眼"）。
+**尚未验证**：`direct` 模式在真实长驻应用上的行为；中断（kill -9）注入；`.app` 外壳合成（代码未实现）；Linux/Windows 上的**人工**体验（CI 覆盖的是测试断言，不是"人对不对得上眼"）；`internal/proc` 的 Windows 与 Linux 实现只在 CI 的真 runner 上证过，本机没跑过真进程（macOS 那条是真跑了的）。
 
 ---
 
@@ -584,6 +654,7 @@ cpi 自己的二进制与签名：
 | **M4 两个仓库的 CI** | cpi-go：三平台单测 + 六平台交叉编译 + tag 发版；ai-desk：三平台真打包 | ✅ **已完成并跑绿**（`242c54e`、`9e33ad7`） |
 | **M5 签名与公证** | macOS Developer ID + 公证 + `xcrun stapler`；Windows 代码签名 | ⏸ **用户明确暂缓**（放弃 1，先做 2 和 3）；仍是真正的发布阻塞项（§5 R1） |
 | **M6 未做的两件** | 合成 `.app` 外壳（需先给 `manifest.Entry` 加 `bin`）；启动器名字冲突检查（R4） | 待做 |
+| **M7 运行中检查** | `internal/proc`（macOS/Linux/Windows 三平台）+ install/uninstall 的拦截闸 + `--force`；真机上拿 AI Desk 验过（拒绝、`--force`、无假阳性、幽灵进程仍在） | ✅ **已完成并实测** |
 
 ---
 
@@ -602,6 +673,8 @@ cpi 自己的二进制与签名：
 | **R7** | 用户已有同名应用（自己装过官方版） | `~/Applications` 里两个同名 | 已处理：目标已存在则不覆盖，只提示 |
 | **R8** | **`.app` 外壳合成没有实现**（D24 的后半条） | 上游只发裸可执行文件的 macOS 应用，现在只能写 `entry.darwin.bundle`，写不出来就装不了；硬把它当 `exe` 收进来，用户拿到的是一个没有应用身份的东西 | 先给 `manifest.Entry` 加 `bin`，再照 §2.7 的配方实现（`Info.plist` 4 键 + **硬链接** `Contents/MacOS/<exe>`）。在实现之前，清单里**不要写没有 `.app` 的 macOS 应用**（M6） |
 | **R9** | **Tauri 前端依赖与 Rust crate 版本漂移** | 这个坑真实发生过：`package.json` 写 `"^2"` + 无 lockfile，CI 解析到比 `Cargo.lock` 更新的 `@tauri-apps/*`，`tauri build` 报 `Found version mismatched Tauri packages` 直接拒绝构建——**本机编得动只是因为 `node_modules` 里还是旧版本** | 已处理：三个 Tauri 包钉死确切版本 + 提交 `package-lock.json` + CI 用 `npm ci`。泛化教训：**凡是"本机能编、CI 编不了"的构建问题，先怀疑锁文件** |
+| **R10** | **进程探测会漏拦**（D31） | 三种漏法：① 进程的可执行文件不在包目录下（比如它自己 `chdir` 走了、或某个壳反过来启动）② 平台不支持枚举进程（`find_other.go`）③ 没权限看别人的进程。漏拦的后果回到 v3.1 的老样子（版本混用 / 幽灵进程），**但用户至少看到过一行提示** | 已接受：**宁可漏拦不可误拦**（FR-17）。真要补，方向是让应用自己上报（单实例锁 / pid 文件），但那要求应用配合，且把 cpi 从"看文件系统"拖进"看运行时协议"——不属于本版 |
+| **R11** | 同名/同目录的**另一个**进程被误判 | 比如用户从同一份 `lib/<id>_…/` 目录里手动跑了两次、或开发者拿这个目录当工作目录跑了个 shell | 前缀比对是**双向的**（`<pkg>/` 开头才算），实机测过"命令行里只是提到这个路径"不命中。真要更严只能校验进程的 `exe` 而不是 `argv[0]`——但那样会漏掉 AppImage 与 macOS 的 `open` 路径，得不偿失 |
 
 ### 开放问题
 
@@ -615,6 +688,8 @@ cpi 自己的二进制与签名：
 | O6 | 中断注入测试（kill -9）什么时候补 | 设计 |
 | O7 | cpi 自身如何升级（现在只会被新 zip 里的副本覆盖） | 用户 |
 | O8 | 要不要做合成 `.app` 外壳（R8）——当前 AI Desk 有真 `.app`，所以不挡路 | 用户 |
+| O9 | 拦下来之后，要不要顺手提供"我来帮你退出它"（发 SIGTERM 再重试）？当前只说不做（§1.5） | 用户 |
+| O10 | 自动更新把 `.app` 换掉之后，**账本里的版本号与目录名会过期**（目录仍叫 `…_0.1.0_…`，里面已是 0.2.0）。要不要让 `cpi list` 从 `Info.plist` 现读一次真实版本 | 用户 |
 
 ---
 
@@ -636,6 +711,8 @@ cpi 自己的二进制与签名：
 | 应用外壳 / shell | cpi 为"上游只发裸可执行文件"的 macOS 应用合成的最小 `.app`（§2.7） |
 | 图形入口 | macOS `~/Applications` 链接、Linux `.desktop`、Windows 开始菜单 `.lnk` |
 | rollback 栈 | 本次安装失败时逆序撤销的依据（与账本分工不同，§2.5） |
+| 正在运行检查 / `proc.Find` | 覆盖安装或卸载之前，查包目录底下有没有活着的进程（§2.9.1）。只做**纯字符串**路径前缀比对，绝不 `stat`——幽灵进程的路径早就没了 |
+| 幽灵进程 / ghost | 文件被删或换掉之后仍抓着旧 inode 继续跑的进程。在 macOS 上更麻烦：LaunchServices 把 `.app` 路径一直绑在它身上，用户点图标只会把它唤到前台 |
 
 ---
 
