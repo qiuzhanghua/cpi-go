@@ -83,7 +83,7 @@ func TestInstallLandsAppInTheHome(t *testing.T) {
 	}
 
 	// 卸载按账本回放，家里那一个入口也该走掉，lib/ 依旧空着。
-	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(app); !os.IsNotExist(err) {

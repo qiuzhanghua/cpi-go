@@ -149,6 +149,7 @@ func splitList(s string) []string {
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	dir := fs.String("dir", "", "家目录（留空则从 gpm 自己的位置推断）")
+	yes := fs.Bool("yes", false, "不询问，直接卸载（脚本里必须给）")
 	force := fs.Bool("force", false, "要删的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm uninstall <id> [选项]")
@@ -161,7 +162,11 @@ func cmdUninstall(args []string) error {
 		fs.Usage()
 		return fmt.Errorf("需要且只需要一个参数：包 id")
 	}
-	return install.Uninstall(*dir, fs.Arg(0), *force, os.Stdout)
+	return install.Uninstall(fs.Arg(0), install.UninstallOptions{
+		Dir:   *dir,
+		Force: *force,
+		Yes:   *yes,
+	})
 }
 
 func cmdList(args []string) error {
@@ -253,7 +258,7 @@ func usage(w *os.File) {
   gpm install <目录或 .zip> [--dir PATH] [--with cot,tdp] [--yes] [--no-path] [--skip-verify] [--force]
   gpm list
   gpm where <id>
-  gpm uninstall <id> [--force]
+  gpm uninstall <id> [--dir PATH] [--yes] [--force]
   gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
   gpm env
   gpm version
@@ -269,8 +274,9 @@ func usage(w *os.File) {
 gpm pack --default-dir 或清单里的 requires；gpm 自己只认上面这个顺序。
 清单里没有 requires 时，GUI 应用没有工具链可以借住，就走平台惯例。
 
-「从 gpm 自己的位置推断」是给装完之后用的：布局规定带 GUI 的应用住在
-<家目录>/lib，而 gpm 与终端启动器这类没有图形界面的小东西住在 <家目录>/bin。
+「从 gpm 自己的位置推断」是给装完之后用的：带 GUI 的应用住在家的顶层
+（<家目录>/<入口名>，v3.6 起），而 gpm 与终端启动器这类没有图形界面的小
+东西住在 <家目录>/bin。
 于是 <家目录>/bin/gpm 这个位置本身就把家目录说出来了 —— 用户在新终端里
 敲 gpm list / gpm where / gpm uninstall 时不必带 --dir，也不必让 shell
 一直替 gpm 记着什么环境变量。判据要求所在目录正好叫 bin、文件名正好是 gpm、

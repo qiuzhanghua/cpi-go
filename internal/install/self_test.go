@@ -177,7 +177,7 @@ func TestInstallKeepsForeignGpmOutOfLedger(t *testing.T) {
 	}
 
 	// 卸载（最后一个包）之后它还得在。
-	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := os.ReadFile(dest); err != nil || string(b) != sentinel {
@@ -210,7 +210,7 @@ func TestUninstallKeepsSelfWhenToolchainEnvSet(t *testing.T) {
 	}
 
 	t.Setenv("TDP_HOME", filepath.Join(t.TempDir(), "tdp"))
-	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(self); err != nil {
@@ -237,7 +237,7 @@ func TestUninstallRemovesSelfWithoutToolchainEnv(t *testing.T) {
 	}
 	self := filepath.Join(h.Bin(), selfName())
 
-	if err := Uninstall(root, "demo", false, io.Discard); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(self); !errors.Is(err, fs.ErrNotExist) {

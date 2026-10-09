@@ -127,7 +127,7 @@ chmod +x "$home/bin/cot"
 	}
 
 	// 4) 卸载把应用清干净，工具链的东西留在原地（D34）。
-	if err := Uninstall(root, "ai-desk", false, io.Discard); err != nil {
+	if err := Uninstall("ai-desk", UninstallOptions{Dir: root, Force: false, Yes: true, Out: io.Discard}); err != nil {
 		t.Fatalf("卸载失败：%v", err)
 	}
 	if _, err := os.Stat(launcher); !os.IsNotExist(err) {

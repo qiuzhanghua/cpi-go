@@ -231,7 +231,7 @@ Windows 用 `%USERPROFILE%`）。没给 `--default-dir`、清单也没有 `requi
 gpm install <目录或 .zip> [--dir PATH] [--with cot[,tdp]] [--yes] [--no-path] [--skip-verify] [--force]
 gpm list
 gpm where <id>
-gpm uninstall <id> [--dir PATH] [--force]
+gpm uninstall <id> [--dir PATH] [--yes] [--force]
 gpm env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时用）
 gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
 ```
@@ -246,6 +246,8 @@ Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前�
 `payload/` 根下多一个条目、入口名撞家骨架这两条，连 `--force` 也拒。
 另外，**工具链要重铺也得 `--force`**：家里已经有 `<家>/bin/cot`（或 `tdp`）时，不带 `--force` 就跳过自举（第 7 节、[`DESIGN.md`](DESIGN.md) D37）。
 
+`--yes` 与 `--force` 是两件事：`--yes` 回答"不用问我了"（install 的 PATH 集成询问、**uninstall 的"确定要删吗"**），`--force` 回答"我知道有风险，照做"（应用正在运行、命令名被别人占着、家里有别人的同名入口、重铺工具链）。**脚本里调 `uninstall` 必须显式给 `--yes`**：不是交互终端又没有 `--yes` 时它什么都不删，退出码仍是 `0`，输出里带一行可照抄的命令——忘给会在第一次运行时就看得见地停下，而不是安静地删掉东西（[`DESIGN.md`](DESIGN.md) D39、§2.9.2、R17）。
+
 `gpm pack` 是**发布者**侧的（给自己 CI 用），不是终端用户用的；它的输出就是本文第 2 节那个 zip。
 `--default-dir` 同样只在打包时用，它写进生成脚本、运行时不参与解析。`--with` 覆盖清单里的 `requires`，只用于调试（第 3 节）。
 
@@ -253,4 +255,4 @@ Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前�
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.8：工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.9：卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。

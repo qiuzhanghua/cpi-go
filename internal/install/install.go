@@ -489,12 +489,30 @@ func Where(dir, id string, out io.Writer) error {
 	return nil
 }
 
+// UninstallOptions 控制一次卸载。
+type UninstallOptions struct {
+	Dir   string    // --dir，覆盖从 gpm 自己的位置推断出来的家
+	Force bool      // 应用正在运行也照做（不推荐）
+	Yes   bool      // 不询问，直接卸载（脚本里必须给）
+	In    io.Reader // 默认 os.Stdin
+	Out   io.Writer // 默认 os.Stdout
+}
+
 // Uninstall 回放账本，把某个包留下的东西全部摘掉。
-func Uninstall(dir, id string, force bool, out io.Writer) error {
+//
+// 删掉的东西回不来，所以动手之前先问一次（D39）：交互终端里把要删的摊开、
+// 问一句 [y/N]，--yes 跳过；非交互环境（脚本、管道、双击）不给 --yes 就
+// 什么都不删 —— 跟安装时请求 PATH 许可（askPath）用同一套口径。
+func Uninstall(id string, opt UninstallOptions) error {
+	out := opt.Out
 	if out == nil {
 		out = os.Stdout
 	}
-	h, err := home.Resolve(dir)
+	in := opt.In
+	if in == nil {
+		in = os.Stdin
+	}
+	h, err := home.Resolve(opt.Dir)
 	if err != nil {
 		return err
 	}
@@ -506,8 +524,12 @@ func Uninstall(dir, id string, force bool, out io.Writer) error {
 	if p == nil {
 		return fmt.Errorf("账本里没有 %q", id)
 	}
-	if err := checkNotRunning(p, force, "重新运行一次 gpm uninstall", out); err != nil {
+	if err := checkNotRunning(p, opt.Force, "重新运行一次 gpm uninstall", out); err != nil {
 		return err
+	}
+	if !askUninstall(out, in, opt.Yes, p) {
+		fmt.Fprintf(out, "已取消，%q 什么都没删。\n", id)
+		return nil
 	}
 	if err := remove(h, led, id, out); err != nil {
 		return err
@@ -530,6 +552,43 @@ func Uninstall(dir, id string, force bool, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "%s 已卸载。目录 %s 还在（里面可能还有你放的东西）。\n", id, h.Root)
 	return nil
+}
+
+// askUninstall 把「要删什么」摊开，再请求一次许可（D39）。
+//
+// 跟安装时请求 PATH 许可（askPath）同一套口径：非交互环境里不替用户
+// 猜意思，必须明确 --yes 才动手。少删一次只是麻烦，多删一次回不来。
+func askUninstall(out io.Writer, in io.Reader, yes bool, p *ledger.Package) bool {
+	if yes {
+		return true
+	}
+	fmt.Fprintf(out, "\n要卸载的是：\n  %s %s（%s）\n", p.Name, p.Version, p.ID)
+	fmt.Fprintf(out, "  入口      %s\n", p.Entry)
+	if p.Launcher != "" {
+		fmt.Fprintf(out, "  启动器    %s\n", p.Launcher)
+	}
+	for _, l := range p.Links {
+		fmt.Fprintf(out, "  图形入口  %s\n", l.Path)
+	}
+	for _, e := range p.PathEdits {
+		fmt.Fprintf(out, "  PATH 块   %s\n", e.Path)
+	}
+	fmt.Fprintln(out, "这些是 gpm 自己装下的东西，删掉就回不来了。")
+
+	if !isTerminal(in) {
+		fmt.Fprintln(out, "当前不是交互终端，没有动手。确认要删就重跑一次并明确同意：")
+		fmt.Fprintf(out, "  gpm uninstall %s --yes\n", p.ID)
+		return false
+	}
+	fmt.Fprint(out, "是否继续？[y/N] ")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		fmt.Fprintln(out, "没有读到你的输入，什么都没删。确认要删就重跑一次并明确同意：")
+		fmt.Fprintf(out, "  gpm uninstall %s --yes\n", p.ID)
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(line))
+	return s == "y" || s == "yes"
 }
 
 func remove(h *home.Home, led *ledger.Ledger, id string, out io.Writer) error {

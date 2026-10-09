@@ -91,7 +91,7 @@ func TestUninstallRefusesWhileTheAppIsRunning(t *testing.T) {
 	root, pkgDir, app := fakeInstall(t)
 
 	var out bytes.Buffer
-	err := Uninstall(root, "demo", false, &out)
+	err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: &out})
 	if err == nil {
 		t.Fatalf("应用（pid %d）正在跑，卸载不该成功。输出：\n%s", app.Process.Pid, out.String())
 	}
@@ -120,7 +120,7 @@ func TestUninstallRefusesWhileTheAppIsRunning(t *testing.T) {
 	waitGone(t, pkgDir)
 
 	out.Reset()
-	if err := Uninstall(root, "demo", false, &out); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: false, Yes: true, Out: &out}); err != nil {
 		t.Fatalf("应用已经退出了，卸载该成功：%v\n输出：\n%s", err, out.String())
 	}
 	led, err = ledger.Load(ledgerPath(root))
@@ -136,7 +136,7 @@ func TestUninstallForceGoesThroughButSaysSo(t *testing.T) {
 	root, _, _ := fakeInstall(t)
 
 	var out bytes.Buffer
-	if err := Uninstall(root, "demo", true, &out); err != nil {
+	if err := Uninstall("demo", UninstallOptions{Dir: root, Force: true, Yes: true, Out: &out}); err != nil {
 		t.Fatalf("--force 之后该放行：%v\n输出：\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "警告") || !strings.Contains(out.String(), "--force") {
