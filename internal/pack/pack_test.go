@@ -31,7 +31,7 @@ func assembly(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	writeFile(t, filepath.Join(dir, "manifest.yaml"), 0o644, `id: ai-desk
+	writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
 name: AI Desk
 version: 1.2.3
 entry:
@@ -108,7 +108,7 @@ func TestBuildRoundTrip(t *testing.T) {
 
 	ns := names(t, got)
 	for _, want := range []string{
-		InstallSH, InstallCMD, "gpm", "manifest.yaml", stage.SumsFile,
+		InstallSH, InstallCMD, "gpm", "ad-manifest.yaml", stage.SumsFile,
 		"payload/AI Desk.app/Contents/Info.plist",
 		"payload/AI Desk.app/Contents/MacOS/ai-desk",
 	} {
@@ -211,7 +211,7 @@ func TestBuildRejectsMissingEntryForTargetOS(t *testing.T) {
 	dir := assembly(t)
 	// 只有 darwin 的清单：拿到 windows 上打包就该当场报错，
 	// 而不是打出一个装上去跑不起来的包。
-	writeFile(t, filepath.Join(dir, "manifest.yaml"), 0o644, `id: ai-desk
+	writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
 name: AI Desk
 version: 1.2.3
 entry:
@@ -236,7 +236,7 @@ launch:
 // 一个看起来打成功了的坏包，比一次明确的失败危险得多。
 func TestBuildLeavesNoHalfZip(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.yaml"), 0o644, `id: x
+	writeFile(t, filepath.Join(dir, "x-manifest.yaml"), 0o644, `id: x
 name: X
 version: 1
 entry:
@@ -256,7 +256,7 @@ entry:
 // TestInstallScriptsAreSelfContained 守住两个入口脚本的关键性质：
 // 它们不能把安装逻辑写在脚本里（那就等于每平台各维护一份）。
 func TestInstallScriptsAreSelfContained(t *testing.T) {
-	sh := InstallScript("")
+	sh := InstallScript("", nil)
 	if !strings.Contains(sh, `cd "$(dirname "$0")"`) {
 		t.Error("install.sh 必须以自己的位置为工作目录，否则用户在任何目录下运行都会找错文件")
 	}
@@ -269,7 +269,7 @@ func TestInstallScriptsAreSelfContained(t *testing.T) {
 		}
 	}
 
-	cmd := InstallBatch("")
+	cmd := InstallBatch("", nil)
 	if !strings.Contains(cmd, "gpm.exe install .") {
 		t.Error("install.cmd 必须调用 gpm.exe")
 	}
@@ -277,39 +277,111 @@ func TestInstallScriptsAreSelfContained(t *testing.T) {
 		t.Error("install.cmd 不该依赖 PowerShell：默认 ExecutionPolicy 会拦住它")
 	}
 
-	// 不指定 --default-dir 时不能凭空编出一个绝对路径来 —— 装到哪儿是打包方的
-	// 决定，gpm 只负责在没有指示时落到自己的相对路径默认值（解压出来的目录）。
-	for _, s := range []string{sh, cmd} {
-		for _, hard := range []string{"$HOME/", "%USERPROFILE%\\", "~/"} {
-			if strings.Contains(s, hard) {
-				t.Errorf("没给 --default-dir 却出现了硬编码安装根 %q：\n%s", hard, s)
-			}
+	// 没给 --default-dir、清单也没有 requires 时，不能凭空编出一个安装根来 ——
+	// 装到哪儿是打包方的决定，gpm 会落到平台数据目录/<简称>。
+	for _, one := range []string{sh, cmd} {
+		if strings.Contains(one, "--dir") {
+			t.Errorf("既没给 --default-dir 也没有 requires，却出现了 --dir：\n%s", one)
 		}
 	}
 }
 
-// TestDefaultDirIsBakedIntoInstallers 守住 --default-dir 的唯一职责：
-// 把「装到哪儿」写进脚本，并且把开头的 ~ 换成能在双引号里展开的家目录变量。
+// TestDefaultDirIsBakedIntoInstallers 守住 --default-dir 的职责：把「装到
+// 哪儿」写进脚本。工具链的家（~/cot）写成 `${COT_HOME:-$HOME/cot}` ——
+// 脚本里给的是默认值，用户在 shell 里设的家仍然算数。
 func TestDefaultDirIsBakedIntoInstallers(t *testing.T) {
-	sh := InstallScript("~/cot")
-	if !strings.Contains(sh, `"${GPM_HOME:-$HOME/cot}"`) {
-		t.Errorf("install.sh 没把 ~ 展开成 $HOME：\n%s", sh)
-	}
-	// $GPM_HOME 必须仍然优先：脚本里给的是默认值，用户能覆盖。
-	if !strings.Contains(sh, "GPM_HOME:-") {
-		t.Errorf("install.sh 的默认值必须挂在 ${GPM_HOME:-…} 上，否则用户覆盖不了：\n%s", sh)
+	sh := InstallScript("~/cot", nil)
+	if !strings.Contains(sh, `--dir "${COT_HOME:-$HOME/cot}"`) {
+		t.Errorf("install.sh 没把 ~/cot 写成 ${COT_HOME:-$HOME/cot}：\n%s", sh)
 	}
 
-	cmd := InstallBatch("~/cot")
-	if !strings.Contains(cmd, `set "GPM_HOME=%USERPROFILE%\cot"`) {
+	cmd := InstallBatch("~/cot", nil)
+	if !strings.Contains(cmd, `set "COT_HOME=%USERPROFILE%\cot"`) {
 		t.Errorf("install.cmd 没把 ~ 展开成 %%USERPROFILE%%：\n%s", cmd)
 	}
-	if !strings.Contains(cmd, `if not defined GPM_HOME`) {
-		t.Errorf("install.cmd 必须在 GPM_HOME 未定义时才设默认值：\n%s", cmd)
+	if !strings.Contains(cmd, `if not defined COT_HOME`) {
+		t.Errorf("install.cmd 必须在 COT_HOME 未定义时才设默认值：\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `--dir "%COT_HOME%"`) {
+		t.Errorf("install.cmd 没把 --dir 指到 COT_HOME：\n%s", cmd)
 	}
 
-	// 不含 ~ 的路径原样照抄，不该被改动。
-	if got := InstallScript("/opt/apps"); !strings.Contains(got, `"${GPM_HOME:-/opt/apps}"`) {
+	// 不是工具链的家（那两家之外的路径）原样照抄，也不替它发明环境变量。
+	if got := InstallScript("/opt/apps", nil); !strings.Contains(got, `--dir "/opt/apps"`) {
 		t.Errorf("绝对路径 --default-dir 被改动了：\n%s", got)
+	}
+	if got := InstallScript("~/ad", nil); !strings.Contains(got, `--dir "$HOME/ad"`) {
+		t.Errorf("非工具链的家不该被写成环境变量：\n%s", got)
+	}
+}
+
+// 没给 --default-dir 时，装到哪儿由清单的 requires 决定。
+func TestRequiresDrivesInstallerDir(t *testing.T) {
+	sh := InstallScript("", []string{"cot"})
+	if !strings.Contains(sh, `--dir "${COT_HOME:-$HOME/cot}"`) {
+		t.Errorf("install.sh 没按 requires 定家：\n%s", sh)
+	}
+	if !strings.Contains(InstallScript("", []string{"tdp"}), `--dir "${TDP_HOME:-$HOME/tdp}"`) {
+		t.Errorf("requires: [tdp] 的家不对：\n%s", sh)
+	}
+
+	cmd := InstallBatch("", []string{"cot"})
+	if !strings.Contains(cmd, `--dir "%COT_HOME%"`) {
+		t.Errorf("install.cmd 没按 requires 定家：\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `set "COT_HOME=%USERPROFILE%\cot"`) {
+		t.Errorf("install.cmd 的兜底值应当是 %%USERPROFILE%%\\cot，而不是 %%COT_HOME%%：\n%s", cmd)
+	}
+}
+
+// 带工具链的包：tools/ 也要进 zip、也要进 SHA256SUMS（D32）。
+func TestBuildPacksToolsAndCoversThem(t *testing.T) {
+	dir := assembly(t)
+	writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
+name: AI Desk
+version: 1.2.3
+requires: [cot]
+entry:
+  darwin:
+    bundle: "AI Desk.app"
+launch:
+  cmd: ad
+`)
+	tool := filepath.Join(dir, "tools", "darwin_arm64", "cot")
+	writeFile(t, tool, 0o755, "#!/bin/sh\necho cot\n")
+
+	out := filepath.Join(t.TempDir(), "out.zip")
+	self := filepath.Join(t.TempDir(), "gpm")
+	writeFile(t, self, 0o755, "FAKE-GPM")
+
+	if _, err := Build(Options{Dir: dir, Out: out, GOOS: "darwin", GOARCH: "arm64", Self: self}); err != nil {
+		t.Fatal(err)
+	}
+	if ns := names(t, out); !has(ns, "tools/darwin_arm64/cot") {
+		t.Errorf("包里没有工具链：%v", ns)
+	}
+
+	dst := filepath.Join(t.TempDir(), "unpacked")
+	if err := stage.Materialize(out, dst); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dst, stage.SumsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "  tools/darwin_arm64/cot\n") {
+		t.Errorf("工具链没进 SHA256SUMS：\n%s", b)
+	}
+	// 安装时会照 payload/ 与 tools/ 两个目录查覆盖。
+	if ok, err := stage.VerifySums(dst, "payload", "tools"); err != nil || !ok {
+		t.Fatalf("VerifySums(payload, tools) = %v/%v", ok, err)
+	}
+	// 安装脚本要把 requires 的家烘出来。
+	sh, err := os.ReadFile(filepath.Join(dst, InstallSH))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sh), `--dir "${COT_HOME:-$HOME/cot}"`) {
+		t.Errorf("install.sh 没按 requires 定家：\n%s", sh)
 	}
 }

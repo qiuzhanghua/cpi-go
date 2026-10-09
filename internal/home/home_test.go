@@ -4,20 +4,31 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
-// Resolve 的优先级：--dir > $GPM_HOME > 从自己的位置推断 > 当前目录。
+// clearToolchainEnv 把工具链的家的环境变量清掉，让每条用例从"没人提示"开始。
+func clearToolchainEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("COT_HOME", "")
+	t.Setenv("TDP_HOME", "")
+}
+
+// Resolve 的优先级：--dir > 从自己的位置推断 > $COT_HOME > $TDP_HOME > 当前目录。
 func TestResolvePriority(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	gpmHome := t.TempDir()
+	cotHome := t.TempDir()
+	tdpHome := t.TempDir()
 	explicit := t.TempDir()
 
-	t.Run("--dir 压过 $GPM_HOME", func(t *testing.T) {
-		t.Setenv("GPM_HOME", gpmHome)
+	t.Run("--dir 压过 $COT_HOME", func(t *testing.T) {
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
+		t.Setenv("COT_HOME", cotHome)
 		h, err := Resolve(explicit)
 		if err != nil {
 			t.Fatal(err)
@@ -27,20 +38,35 @@ func TestResolvePriority(t *testing.T) {
 		}
 	})
 
-	t.Run("没有 --dir 就用 $GPM_HOME", func(t *testing.T) {
-		t.Setenv("GPM_HOME", gpmHome)
+	t.Run("没有 --dir 就用 $COT_HOME", func(t *testing.T) {
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
+		clearToolchainEnv(t)
+		t.Setenv("COT_HOME", cotHome)
 		h, err := Resolve("")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if h.Root != gpmHome {
-			t.Fatalf("Root = %q，想要 %q", h.Root, gpmHome)
+		if h.Root != cotHome {
+			t.Fatalf("Root = %q，想要 %q", h.Root, cotHome)
+		}
+	})
+
+	t.Run("$TDP_HOME 排在 $COT_HOME 后面", func(t *testing.T) {
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
+		clearToolchainEnv(t)
+		t.Setenv("TDP_HOME", tdpHome)
+		h, err := Resolve("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != tdpHome {
+			t.Fatalf("Root = %q，想要 %q", h.Root, tdpHome)
 		}
 	})
 
 	// 这一条是 v3.3 的重点：gpm 不该自己发明 ~/ad 这样的默认值。
-	t.Run("两个都没给就落在当前目录", func(t *testing.T) {
-		t.Setenv("GPM_HOME", "")
+	t.Run("什么都没给就落在当前目录", func(t *testing.T) {
+		clearToolchainEnv(t)
 		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
 		h, err := Resolve("")
 		if err != nil {
@@ -55,7 +81,7 @@ func TestResolvePriority(t *testing.T) {
 	})
 
 	t.Run("相对路径按当前目录展开", func(t *testing.T) {
-		t.Setenv("GPM_HOME", "")
+		clearToolchainEnv(t)
 		h, err := Resolve("sub/dir")
 		if err != nil {
 			t.Fatal(err)
@@ -65,6 +91,127 @@ func TestResolvePriority(t *testing.T) {
 			t.Fatalf("Root = %q，想要 %q", h.Root, want)
 		}
 	})
+}
+
+// ResolveInstall 的优先级（D21）：
+// --dir > requires 指出的家 > 从自己的位置推断 > 平台数据目录/<简称> > 当前目录。
+func TestResolveInstallPriority(t *testing.T) {
+	cotHome := t.TempDir()
+	tdpHome := t.TempDir()
+	explicit := t.TempDir()
+
+	t.Run("--dir 压过 requires", func(t *testing.T) {
+		t.Setenv("COT_HOME", cotHome)
+		h, err := ResolveInstall(explicit, "ad", []string{"cot"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != explicit {
+			t.Fatalf("Root = %q，想要 %q", h.Root, explicit)
+		}
+	})
+
+	t.Run("requires 指到哪就装到哪", func(t *testing.T) {
+		clearToolchainEnv(t)
+		t.Setenv("TDP_HOME", tdpHome)
+		h, err := ResolveInstall("", "ad", []string{"tdp"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != tdpHome {
+			t.Fatalf("Root = %q，想要 %q", h.Root, tdpHome)
+		}
+	})
+
+	t.Run("没有 requires 也没有环境提示就装进平台数据目录/<简称>", func(t *testing.T) {
+		clearToolchainEnv(t)
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
+		fakeHome := t.TempDir()
+		stubUserHome(t, fakeHome)
+
+		base, ok := PlatformDataDir()
+		if !ok {
+			t.Skip("这台机器上问不出平台数据目录")
+		}
+		h, err := ResolveInstall("", "ad", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(base, "ad"); h.Root != want {
+			t.Fatalf("Root = %q，想要 %q", h.Root, want)
+		}
+	})
+
+	t.Run("环境提示压过平台数据目录", func(t *testing.T) {
+		clearToolchainEnv(t)
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
+		stubUserHome(t, t.TempDir())
+		t.Setenv("COT_HOME", cotHome)
+
+		h, err := ResolveInstall("", "ad", []string{"cot"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Root != cotHome {
+			t.Fatalf("Root = %q，想要 %q", h.Root, cotHome)
+		}
+	})
+}
+
+// 没有 requires 的包不带工具链，家就在平台惯例的位置：macOS 是
+// ~/Library/Application Support，Linux 是 ~/.local/share。
+func TestPlatformDataDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	stubUserHome(t, fakeHome)
+
+	base, ok := PlatformDataDir()
+	if !ok {
+		t.Fatal("PlatformDataDir 说有用户目录却返回了 false")
+	}
+	if !strings.HasPrefix(base, fakeHome) {
+		t.Errorf("base = %q，不在 %q 之下", base, fakeHome)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if want := filepath.Join(fakeHome, "Library", "Application Support"); base != want {
+			t.Errorf("base = %q，想要 %q", base, want)
+		}
+	case "windows":
+		if !strings.Contains(base, "AppData") && strings.TrimSpace(os.Getenv("LOCALAPPDATA")) == "" {
+			t.Errorf("base = %q，不像 Windows 的数据目录", base)
+		}
+	}
+}
+
+// 问不出用户目录时，平台数据目录这条路就走不通（调用方会落到当前目录）。
+func TestPlatformDataDirWithoutUserHome(t *testing.T) {
+	stubUserHome(t, "")
+	if base, ok := PlatformDataDir(); ok || base != "" {
+		t.Fatalf("PlatformDataDir = %q/%v，想要空/false", base, ok)
+	}
+}
+
+// RequireHome 先认环境变量，再落到 ~/<名字>。
+func TestRequireHome(t *testing.T) {
+	clearToolchainEnv(t)
+	fakeHome := t.TempDir()
+	stubUserHome(t, fakeHome)
+
+	if got, want := RequireHome("cot"), filepath.Join(fakeHome, "cot"); got != want {
+		t.Errorf("cot = %q，想要 %q", got, want)
+	}
+	t.Setenv("COT_HOME", "/somewhere/else")
+	if got := RequireHome("cot"); got != "/somewhere/else" {
+		t.Errorf("cot = %q，想要 $COT_HOME 给的 /somewhere/else", got)
+	}
+}
+
+// stubUserHome 把「用户家目录在哪儿」换成给定答案。
+func stubUserHome(t *testing.T, dir string) {
+	t.Helper()
+	old := userHome
+	userHome = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { userHome = old })
 }
 
 // stubSelf 把「gpm 现在在哪儿」换成给定答案。
@@ -96,11 +243,11 @@ func fakeRoot(t *testing.T, exeName string) (root string, exe string) {
 }
 
 // 这一条是 O11 的答案：<家目录>/bin/gpm 这个位置本身就把家目录说出来了，
-// 用户在新终端里敲 gpm list 不必带 --dir，也不必让 shell 记着 GPM_HOME。
+// 用户在新终端里敲 gpm list 不必带 --dir，也不必让 shell 记着 COT_HOME。
 func TestResolveFromSelfLocation(t *testing.T) {
 	root, exe := fakeRoot(t, "gpm")
 	stubSelf(t, exe, nil)
-	t.Setenv("GPM_HOME", "")
+	clearToolchainEnv(t)
 
 	h, err := Resolve("")
 	if err != nil {
@@ -111,7 +258,24 @@ func TestResolveFromSelfLocation(t *testing.T) {
 	}
 }
 
-func TestResolveSelfLocationIsTheLastResort(t *testing.T) {
+// 「自己住在哪个家里」是比环境变量更具体的证据：用户敲的是
+// `<某个家>/bin/gpm list`，他要看的就是那个家。
+func TestResolveSelfLocationBeatsEnv(t *testing.T) {
+	root, exe := fakeRoot(t, "gpm")
+	stubSelf(t, exe, nil)
+	clearToolchainEnv(t)
+	t.Setenv("COT_HOME", t.TempDir())
+
+	h, err := Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Root != root {
+		t.Fatalf("Root = %q，想要从自己的位置推断出的 %q", h.Root, root)
+	}
+}
+
+func TestResolveSelfLocationIsNotEverything(t *testing.T) {
 	_, exe := fakeRoot(t, "gpm")
 	stubSelf(t, exe, nil)
 
@@ -126,15 +290,17 @@ func TestResolveSelfLocationIsTheLastResort(t *testing.T) {
 		}
 	})
 
-	t.Run("$GPM_HOME 仍然压过推断", func(t *testing.T) {
+	t.Run("推断不出来时才轮到 $COT_HOME", func(t *testing.T) {
 		other := t.TempDir()
-		t.Setenv("GPM_HOME", other)
+		t.Setenv("COT_HOME", other)
+		// 换一个不叫 bin、也没有账本的位置：推断失效。
+		stubSelf(t, filepath.Join(t.TempDir(), "gpm-dist", "gpm"), nil)
 		h, err := Resolve("")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if h.Root != other {
-			t.Fatalf("Root = %q，想要 $GPM_HOME 给的 %q", h.Root, other)
+			t.Fatalf("Root = %q，想要 $COT_HOME 给的 %q", h.Root, other)
 		}
 	})
 }
@@ -156,7 +322,7 @@ func TestRootFromSelfRejectsLookalikes(t *testing.T) {
 			t.Fatal(err)
 		}
 		stubSelf(t, moved, nil)
-		t.Setenv("GPM_HOME", "")
+		clearToolchainEnv(t)
 		if _, ok := RootFromSelf(); ok {
 			t.Fatal("bin 之外的 gpm 不该被当成家目录的线索")
 		}

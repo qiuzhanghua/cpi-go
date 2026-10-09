@@ -1,4 +1,4 @@
-# gpm 包格式与安装布局（A 方案 · 已冻结）
+# gpm 包格式与安装布局（契约 · 已冻结 · v3.5）
 
 本文只记录**已经拍板**的接口。它是 `AI Desk` 的 CI 与 `gpm` 之间唯一的契约，
 两个仓库各自独立演进时以本文为准。
@@ -7,16 +7,19 @@
 
 | # | 问题 | 裁决 |
 |---|---|---|
-| 1 | gpm 的家目录（安装根）怎么定 | **gpm 不发明默认值**：`--dir` > 环境变量 `GPM_HOME` > **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/ad`）。gpm 的全部内部结构（`bin/`、`lib/`、`state.json`、`staging/`）都住在安装根里。 |
-| 2 | gpm 怎么到用户手上 | **分发包自带 gpm**：zip 里同时放 gpm 二进制与几行 bootstrap 脚本，用户解压后跑脚本即可，不需要预装任何东西。 |
-| 3 | gpm 的范围 | **GUI 应用的安装器**：只收录带图形界面的程序；一个 zip 装一个应用，**账本本身支持多包**。不做纯 CLI 工具、不做镜像表/版本源、**没有一行网络代码**——不抓取、不升级，对标 `dpkg` 而不是 `apt`（见 [`DESIGN.md`](DESIGN.md) §0.5）。 |
+| 1 | gpm 的家目录（安装根）怎么定 | `--dir` > **按清单里 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> **平台数据目录 + 简称**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/cot`）。**v3.5 起没有 `GPM_HOME`**：这个家同时是 cot / tdp 自己的家，gpm 的内部结构（`bin/`、`lib/`、`state.json`、`staging/`）与工具链的东西住在同一个目录里（见第 5 节末）。 |
+| 2 | gpm 怎么到用户手上 | **分发包自带 gpm**：zip 里同时放 gpm 二进制与几行 bootstrap 脚本，用户解压后跑脚本即可，不需要预装任何东西。清单声明 `requires` 时还要带上 `tools/<os>_<arch>/` 里那家工具链（第 2、7 节）。 |
+| 3 | gpm 的范围 | **GUI 应用的安装器 + 离线搬运 zip 自带的工具链**：只收录带图形界面的程序；一个 zip 装一个应用，**账本本身支持多包**。清单声明 `requires: [cot]` 时，install.sh 先跑 zip 里的 cot（第 7 节）；工具链的资产**不进账本、卸载不碰**（第 6 节）。不做纯 CLI 工具的抓取与安装、不做镜像表/版本源、**没有一行网络代码**——不抓取、不升级，对标 `dpkg` 而不是 `apt`（见 [`DESIGN.md`](DESIGN.md) §0.5、D32/D34）。 |
 
-裁决 1 的直接好处：**卸载 = 删掉一个目录**，整个安装根可以整体搬走或放进 U 盘。
+裁决 1 的直接好处：gpm 写下的每一处都记在账本里（第 6 节），**卸载就是照账逐条回放**。
+**v3.5 之后"卸载 = 删掉一个目录"不再成立**——那个家里还住着 cot / tdp 自己的东西，
+所以只能按账本删、不能整目录删（第 5 节末、[`DESIGN.md`](DESIGN.md) D34）。
 
-裁决 1 的代价（明确接受）：**gpm 自己不知道该装到哪儿**。用户在终端里直接敲
-`gpm install .` 而没有任何 `--dir` / `GPM_HOME`、且 gpm 二进制不在某个 `<家目录>/bin/gpm`
-的位置上时，它会装到**当前目录**。
-要让它有合理默认值，就得由打包方用 `--default-dir` 说清楚——这正是
+裁决 1 的代价（明确接受）：**gpm 只有一个"自己挑"的落脚点**，而且只在没有工具链的家可依附时
+才用它。用户在终端里直接敲 `gpm install .`、没有任何 `--dir` / `$COT_HOME` / `$TDP_HOME`、
+gpm 二进制也不在某个 `<家目录>/bin/gpm` 的位置上时：清单声明了 `requires` 就装进那家的家，
+没声明就装到**平台数据目录 + 简称**（上面第 4 档）——不会掉进当前目录。
+想让位子更明确，还是由打包方用 `--default-dir` 说清楚：这正是
 `install.sh` / `install.cmd` 存在的主要理由。
 
 ## 2. 分发包
@@ -29,28 +32,31 @@ ai-desk-1.0.0-darwin-arm64.zip
 ├── install.sh          # macOS / Linux 的 bootstrap
 ├── install.cmd         # Windows 的 bootstrap
 ├── gpm                 # 本平台的 gpm 二进制（Windows 为 gpm.exe）
-├── manifest.yaml       # 清单
+├── ad-manifest.yaml    # 清单，文件名 = <简称>-manifest.yaml
+├── tools/              # 选填：requires 非空时才有（第 3、7 节）
+│   └── darwin_arm64/cot
 ├── payload/            # 载荷，内容会被原样安装到包目录
 │   └── AI Desk.app
 └── SHA256SUMS          # 校验和
 ```
 
-* 归档里只放本平台需要的入口形态，`manifest.yaml` 里仍可写全三个平台（见下）。
+* 归档里只放本平台需要的入口形态，清单里仍可写全三个平台（见下）。
 * 平台不匹配时 gpm 直接拒绝安装，不会装出一个跑不起来的目录。
 * 这个 zip 由 **`gpm pack`** 产出
   （`gpm pack <装配目录> [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]`）。
-  装配目录里只需要 `manifest.yaml` + `payload/`，其余几样是 `gpm pack` 现场生成的——
+  装配目录里只需要 `<简称>-manifest.yaml` + `payload/`（要自举工具链再加 `tools/`），其余几样是 `gpm pack` 现场生成的——
   所以**打出来的 `SHA256SUMS`、`install.sh`、`install.cmd` 在三个平台上是同一份实现**，
-  不靠每个仓库各写一遍打包脚本（理由见 [`DESIGN.md`](DESIGN.md) §2.15）。
-* `--default-dir` 只影响生成脚本里的那一个默认值（第 7 节）；留空时脚本落到 `.`，
-  也就是用户解压出来的那个目录。
+  不靠每个仓库各写一遍打包脚本（理由见 [`DESIGN.md`](DESIGN.md) §2.15）。`tools/` 也一并打进 zip 并纳入 `SHA256SUMS`——坏掉的 cot 必须在动手之前就被发现。
+* `--default-dir` 只影响生成脚本里的那一个默认值（第 7 节）；留空时脚本**干脆不传 `--dir`**：
+  清单有 `requires` 就交给 gpm 去解析那家的家，没有就落到平台数据目录 + 简称（第 1 节）。
 
-## 3. manifest.yaml
+## 3. 清单：<简称>-manifest.yaml
 
 ```yaml
 id: ai-desk            # 小写字母/数字/._-，目录名与账本主键
 name: AI Desk          # 显示名，用来建 ~/Applications/AI Desk.app
 version: 1.0.0
+requires: [cot]        # 选填：要哪家工具链（cot / tdp），决定安装根与是否自举；缺省 []
 entry:
   darwin:  { bundle: AI Desk.app }   # 相对于 payload/，macOS 用 .app
   linux:   { exe: ad }               # 相对于 payload/，裸可执行文件
@@ -65,14 +71,23 @@ launch:
 * `entry.<goos>` **必须恰好**给 `bundle` 或 `exe` 之一。同时给或都不给都报错。
 * `entry` 里的路径**相对于 `payload/`**，也**相对于安装后的包目录**。
   也就是说 `bundle: AI Desk.app` 会落到
-  `<GPM_HOME>/lib/ai-desk_1.0.0_darwin_arm64/AI Desk.app`。
+  `<家>/lib/ai-desk_1.0.0_darwin_arm64/AI Desk.app`。
 * 路径必须是相对路径，禁止绝对路径、盘符、`..`。
-* `launch.cmd` 必须是合法的可执行文件名（不含 `/`、`\`、`..`）。
+* `launch.cmd` 必须是合法的可执行文件名（不含 `/`、`\`、`..`），也**不能是 `gpm`**（那是 gpm 自己用的）。
+* `launch.cmd` 在同一个家里撞名就**拒绝安装**（[`DESIGN.md`](DESIGN.md) FR-21）：
+  账本里这个命令名已经属于别的包，或者 `<家>/bin/<cmd>` 已经存在、且不是 gpm 写的（没有
+  `由 gpm 生成，请勿手工编辑。` 这一行）。只有 `--force` 才覆盖。
 * `launch.mode`：
-  * `activate`（默认）：macOS 上生成 `exec open "<app>" --args "$@"`，
-    与双击完全等价，能激活已运行的实例。
-  * `direct`：macOS 上直接跑 `.app/Contents/MacOS/<CFBundleExecutable>`，
-    能拿到 stdout、退出码和 `Ctrl+C`。
+  * `activate`（默认）：Linux / Windows 上生成常规启动器（Windows 是 `<cmd>.cmd`）。
+  * `direct`：同上。
+  * **macOS：`requires` 非空时两种模式生成的东西一样**——先注入工具链环境（`COT_HOME` / `TDP_HOME`
+    与前置的 `<家>/bin`，`<家>/bin/env-cot.vars` 存在时 source 它），再直接
+    `exec "<app>/Contents/MacOS/<CFBundleExecutable>" "$@"`。原因：`open` 走 LaunchServices、
+    **不给环境**（实测只有 15 项 launchd 基线，`open --env` 不生效），而"终端启动的应用
+    看得见工具链"是 v3.5 的硬需求。代价是丢掉双击等价、单实例激活与 Dock 行为；
+    Finder / 启动台双击这条路径拿不到注入（见 [`DESIGN.md`](DESIGN.md) D33、A7、R13）。
+  * **`requires` 为空时不改道**：没有环境要注入，`activate` 照旧生成
+    `exec open "<app>" --args "$@"`（保住双击语义），只有 `direct` 直接 exec 内层可执行文件。
 * 上游直接发 `.app` 就用 `bundle`。**本版没有 `bin`**：上游只发裸可执行文件的
   macOS 应用，现在装不了（合成 `.app` 外壳的设计已定、代码未实现，见
   [`DESIGN.md`](DESIGN.md) §2.7 与 R8）。硬把裸 Mach-O 当 `exe` 收进来，
@@ -87,7 +102,7 @@ launch:
 ```
 
 * `payload/` 下的**每一个常规文件都必须出现在清单里**，gpm 逐条校验，
-  有一条对不上就中止安装。符号链接不参与校验。
+  有一条对不上就中止安装。符号链接不参与校验。`tools/` 里的文件同样要出现在清单里。
 * 缺失 `SHA256SUMS` 时 gpm 打印警告并继续，账本把这次安装标成 `unverified`。
 * `gpm install --skip-verify` 可以显式跳过校验（只用于调试）。
 * 这份文件由 `gpm pack` 生成（按路径排序、每行 `<hash>` + 两个空格 + 路径），
@@ -96,24 +111,29 @@ launch:
 ## 5. 安装后的布局
 
 ```
-<GPM_HOME>/
+<家>/                             # = $COT_HOME（默认 ~/cot）或 $TDP_HOME（默认 ~/tdp）；
+                                  #   requires 为空时 = 平台数据目录/<简称>
 ├── bin/
 │   ├── gpm                       # 自动拷进来，保证之后 list/uninstall 可用
-│   └── ad                        # 终端启动器（Windows 上是 ad.cmd）
+│   ├── ad                        # 终端启动器（Windows 上是 ad.cmd）
+│   ├── cot / tdp                 # 工具链自举的产物（gpm 不记账、卸载不碰）
+│   └── activate* / env-cot*      # cot 的 activate 框架，同上
 ├── lib/
-│   └── ai-desk_1.0.0_darwin_arm64/
-│       └── AI Desk.app           # payload/ 的内容原样落在这里
+│   ├── ai-desk_1.0.0_darwin_arm64/
+│   │   └── AI Desk.app           # payload/ 的内容原样落在这里（账本管这一支）
+│   └── go_1.27.1_darwin_arm64/ … # cot 装的插件（gpm 不记账、卸载不碰）
 ├── staging/                      # 解包中转，每次安装一个 unpack-<纳秒>，结束即删
 └── state.json                    # 账本：所有外部副作用的唯一真相
 ```
 
-除这四样之外，安装根下不放别的东西。`<GPM_HOME>` 本身是什么路径由调用方决定
-（第 1 节），安装布局与它无关。
+**这个家不是 gpm 独占的**（v3.5）：`bin/` 与 `lib/` 里还有 cot / tdp 自己放的东西——上面带"不记账"注的都是。`gpm uninstall` 只按账本回放、**不扫目录**，否则"卸载一个 GUI 应用"会把用户的 go / java 一起删掉（[`DESIGN.md`](DESIGN.md) D34）。`<家>` 本身是什么路径由调用方决定
+（第 1 节：`--dir` > 按 `requires` 取的家 > 从自己的位置推断 > 平台数据目录/<简称> > 当前目录），
+安装布局与它无关。
 
 `bin/` 与 `lib/` 的分界是**有没有图形界面**，不是"是不是可执行文件"：带 GUI 的应用
 住在 `lib/<id>_<version>_<os>_<arch>/`，没有图形界面的小东西——终端启动器与 gpm
 自己——住在 `bin/`。这条分界也是 gpm 能"从自己在哪儿反推家目录"的依据（第 1 节）：
-用户在新终端里敲 `gpm list` 时环境里并没有 `GPM_HOME`，`<家目录>/bin/gpm` 这个位置
+用户在新终端里敲 `gpm list` 时环境里并没有 `COT_HOME`（工具链没被激活过），`<家目录>/bin/gpm` 这个位置
 把它找回来——判据是所在目录正好叫 `bin`、文件名正好是 `gpm`、且上一级有 `state.json`，
 所以 `/usr/local/bin/gpm` 这种地方不会被误认。
 
@@ -131,14 +151,16 @@ launch:
 
 | 平台 | 副作用 | 卸载时 |
 |---|---|---|
-| 全平台 | `<GPM_HOME>/bin/<cmd>` 启动器（Windows 上是 `<cmd>.cmd`） | 删除 |
-| 全平台 | `<GPM_HOME>/bin/gpm`（Windows 上是 `gpm.exe`）自拷贝 | 账本为空时删除 |
-| 全平台 | `<GPM_HOME>/lib/<id>_<ver>_<os>_<arch>/` | 整目录删除 |
+| 全平台 | `<家>/bin/<cmd>` 启动器（Windows 上是 `<cmd>.cmd`） | 删除 |
+| 全平台 | `<家>/bin/gpm`（Windows 上是 `gpm.exe`）自拷贝 | 账本为空时删除 |
+| 全平台 | `<家>/lib/<id>_<ver>_<os>_<arch>/` | 整目录删除 |
 | macOS | `~/Applications/<name>.app` 软链（进启动台 / Spotlight） | 删除 |
 | Linux | `~/.local/share/applications/<id>.desktop`（遵守 `$XDG_DATA_HOME`） | 删除 |
 | POSIX | shell 配置里的 `# >>> gpm >>>` … `# <<< gpm <<<` 标记块 | 摘除标记块 |
 | Windows | `HKCU\Environment` 的 `Path` 最前面那一条 | 摘除那一条 |
 | Windows | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\gpm\<name>.lnk` | 删除 |
+
+工具链自己的资产（`bin/cot`、`bin/tdp`、`env-cot*`、`activate*`、`lib/` 下的插件）**不在这张表里**：它们不是 gpm 写的，卸载时一律不碰（第 5 节末、[`DESIGN.md`](DESIGN.md) D34）。
 
 **PATH 集成是唯一需要用户点头的副作用**：写入 shell 配置前必须用人话问一次，
 用户拒绝时软件照装、图标照建，只是终端里敲不出来（功能降级，不是失败）。
@@ -168,7 +190,7 @@ Windows 上的两条硬规定：
 set -eu
 cd "$(dirname "$0")"
 chmod +x ./gpm 2>/dev/null || true
-exec ./gpm install . --dir "${GPM_HOME:-$HOME/ad}"
+exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}"
 ```
 
 `install.cmd`：
@@ -177,17 +199,19 @@ exec ./gpm install . --dir "${GPM_HOME:-$HOME/ad}"
 @echo off
 setlocal
 cd /d "%~dp0"
-if not defined GPM_HOME set "GPM_HOME=%USERPROFILE%\ad"
-gpm.exe install . --dir "%GPM_HOME%"
+if not defined COT_HOME set "COT_HOME=%USERPROFILE%\cot"
+gpm.exe install . --dir "%COT_HOME%"
 pause
 ```
 
-脚本只做三件事：切到自己的目录、把安装根解析成一个具体路径、把 gpm 叫起来。
+脚本只做三件事：切到自己的目录、把家解析成一个具体路径、把 gpm 叫起来。
 **安装逻辑一行都不在脚本里**，所以三个平台不会各自跑偏。
+工具链自举同样不在脚本里——它由 gpm 按清单的 `requires` 编排（第 3 节、[`DESIGN.md`](DESIGN.md) §2.5.1）。
 
-上面那两行里的 `$HOME/ad` 与 `%USERPROFILE%\ad` 就是 `gpm pack --default-dir ~/ad`
-烘进来的默认值（`~` 展开：POSIX 用 `$HOME`，Windows 用 `%USERPROFILE%`）。没给
-`--default-dir` 时它们都是 `.`。**烘进去的只是默认值**：用户仍可用 `GPM_HOME`
+上面那两行里的 `$HOME/cot` 与 `%USERPROFILE%\cot` 是 `gpm pack` 按清单的 `requires`
+（或打包方给的 `--default-dir "~/cot"`）烘进来的默认值（`~` 展开：POSIX 用 `$HOME`，
+Windows 用 `%USERPROFILE%`）。没给 `--default-dir`、清单也没有 `requires` 时，脚本里
+**没有 `--dir` 这一项**——让 gpm 自己按第 1 节的链去定。**烘进去的只是默认值**：用户仍可用 `COT_HOME` / `TDP_HOME`
 环境变量或 `--dir` 覆盖。
 
 `<bin>/gpm` 已经存在时**不覆盖**：那是用户自己的 gpm，装完只提示一句，
@@ -196,7 +220,7 @@ pause
 ## 8. CLI（本版）
 
 ```
-gpm install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
+gpm install <目录或 .zip> [--dir PATH] [--with cot[,tdp]] [--yes] [--no-path] [--skip-verify] [--force]
 gpm list
 gpm where <id>
 gpm uninstall <id> [--dir PATH] [--force]
@@ -204,16 +228,19 @@ gpm env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时�
 gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
 ```
 
-`GPM_HOME` 的解析优先级：`--dir` > 环境变量 `GPM_HOME` > 从 gpm 自己的位置推断
-（二进制正好在 `<家目录>/bin/gpm`、且上一级有 `state.json` 时，家目录就是上一级）> 当前目录。
+家的解析优先级：`--dir` > **按 `requires` 取的家**（`$COT_HOME` / `$TDP_HOME`）> 从 gpm 自己的位置推断
+（二进制正好在 `<家目录>/bin/gpm`、且上一级有 `state.json` 时，家目录就是上一级）>
+**平台数据目录/<简称>**（`requires` 为空时：macOS `~/Library/Application Support`、
+Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前目录。
 
-`--force` 只绕过"那个应用正在运行"这一道闸（第 5 节末），不是忽略一切错误的万能开关。
+`--force` 绕过的只有两道闸：**"那个应用正在运行"**（第 5 节末）与**"这个命令名已经被别人占着"**
+（第 3 节）。它不是忽略一切错误的万能开关。
 
 `gpm pack` 是**发布者**侧的（给自己 CI 用），不是终端用户用的；它的输出就是本文第 2 节那个 zip。
-`--default-dir` 同样只在打包时用，它写进生成脚本、运行时不参与解析。
+`--default-dir` 同样只在打包时用，它写进生成脚本、运行时不参与解析。`--with` 覆盖清单里的 `requires`，只用于调试（第 3 节）。
 
 ## 9. 与设计文档的关系
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.4：gpm 之名 + 安装根由安装器传入 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.5：gpm 之名 + 家 = 工具链自己的家 + 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。

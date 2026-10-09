@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -25,11 +26,12 @@ import (
 
 // Options 控制一次安装。
 type Options struct {
-	Dir        string    // --dir，覆盖 GPM_HOME
+	Dir        string    // --dir，覆盖清单给出的家
+	With       []string  // --with，覆盖清单里的 requires
 	Yes        bool      // 不询问，直接做 PATH 集成
 	NoPath     bool      // 完全跳过 PATH 集成
 	SkipVerify bool      // 跳过 SHA256SUMS 校验（只用于调试）
-	Force      bool      // 应用正在运行也照做（覆盖安装与卸载都用得上）
+	Force      bool      // 应用正在运行、或命令名被别人占着，也照做
 	In         io.Reader // 默认 os.Stdin
 	Out        io.Writer // 默认 os.Stdout
 }
@@ -45,10 +47,22 @@ func Install(src string, opt Options) error {
 		in = os.Stdin
 	}
 
-	h, err := home.Resolve(opt.Dir)
+	// 家在哪由清单里的 requires 决定（D21），所以得先隔着包装看一眼清单。
+	// 只看那几百字节，几 GB 的载荷等家定下来、staging 建好之后再解。
+	peek, err := manifest.Peek(src)
 	if err != nil {
 		return err
 	}
+	requires := peek.Requires
+	if opt.With != nil {
+		requires = opt.With
+	}
+
+	h, err := home.ResolveInstall(opt.Dir, peek.Short(), requires)
+	if err != nil {
+		return err
+	}
+	freshHome := !h.Exists() // 这个家是这次刚建出来的？失败时好把空骨架收回去
 	if err := h.Ensure(); err != nil {
 		return err
 	}
@@ -67,7 +81,7 @@ func Install(src string, opt Options) error {
 	if opt.SkipVerify {
 		fmt.Fprintln(out, "已按 --skip-verify 跳过校验。")
 	} else {
-		v, err := stage.VerifySums(unpack, manifest.PayloadDir)
+		v, err := stage.VerifySums(unpack, manifest.PayloadDir, manifest.ToolsDir)
 		if err != nil {
 			return err
 		}
@@ -92,10 +106,28 @@ func Install(src string, opt Options) error {
 		return fmt.Errorf("清单声明的入口在包里找不到：payload/%s", entry.Rel())
 	}
 
+	tcs := toolchainsFor(h, requires)
+
 	led, err := ledger.Load(h.LedgerPath())
 	if err != nil {
 		return err
 	}
+	if err := checkLauncherName(h, led, m, opt.Force); err != nil {
+		return err
+	}
+
+	// 工具链先装（F3 的顺序）：它要是装不上，应用这边一个字节都还没动，
+	// 用户看到的是「什么都没发生」，而不是半个应用。
+	if err := installToolchains(unpack, tcs, out); err != nil {
+		if freshHome {
+			// 先把 staging 里那半份载荷清掉，DropIfEmpty 才收得回去
+			// —— 它只删空目录，免得不小心带走别人的东西。
+			os.RemoveAll(unpack)
+			h.DropIfEmpty()
+		}
+		return err
+	}
+
 	if prev := led.Find(m.ID); prev != nil {
 		if err := checkNotRunning(prev, opt.Force, "重新运行一次 gpm install", out); err != nil {
 			return err
@@ -130,7 +162,15 @@ func Install(src string, opt Options) error {
 	}
 	fmt.Fprintf(out, "已释放到 %s\n", pkgDir)
 
-	launcher, err := integrate.Launcher(h.Bin(), m.Launch.Cmd, entryAbs, entry.Kind(), h.GOOS, m.Mode())
+	launcher, err := integrate.Launcher(integrate.Spec{
+		BinDir:     h.Bin(),
+		Cmd:        m.Launch.Cmd,
+		EntryAbs:   entryAbs,
+		Kind:       entry.Kind(),
+		GOOS:       h.GOOS,
+		Mode:       m.Mode(),
+		Toolchains: tcs,
+	})
 	if err != nil {
 		return fail(err)
 	}
@@ -228,6 +268,89 @@ func Install(src string, opt Options) error {
 	}
 
 	fmt.Fprintf(out, "\n%s %s 装好了。\n  位置：%s\n  命令：%s\n", m.Name, m.Version, pkgDir, m.Launch.Cmd)
+	return nil
+}
+
+// toolchainsFor 算出这次要装、要注入哪几家工具链，各自的家在哪。
+//
+// 第一家就是应用自己住的那个家（D21：家按 requires 的第一家取），工具链
+// 也住进去 —— 这正是「GUI 与命令行工具同住一家」的意思（R14）。第二家
+// 往后各自回自己的家（cot 住 $COT_HOME，tdp 住 $TDP_HOME）。
+func toolchainsFor(h *home.Home, requires []string) []integrate.Toolchain {
+	var out []integrate.Toolchain
+	for i, r := range requires {
+		root := h.Root
+		if i > 0 {
+			if v := home.RequireHome(r); v != "" {
+				root = v
+			}
+		}
+		out = append(out, integrate.Toolchain{Name: r, Home: root})
+	}
+	return out
+}
+
+// installToolchains 把 zip 自带的工具链铺进它的家。
+//
+// 跑的是包里的 tools/<os>_<arch>/<name>，命令是 `<name> i -s <家>`：cot
+// （与同一个框架的 tdp）的 install 只要一个目录参数，-s 是 --silence。
+// 这一步不联网 —— 工具链的二进制就在包里，它只把自个儿铺进家目录（C3）。
+//
+// 归属边界（D34）：这一步写下的东西不进 gpm 的账本，卸载也不回放。那是
+// 工具链自己的东西，归它自己的命令管（cot use / cot rm）。gpm 只负责把
+// 它搬来；装到一半失败时，除了刚建出来的空骨架，gpm 不去猜哪些是它的。
+func installToolchains(unpack string, tcs []integrate.Toolchain, out io.Writer) error {
+	if len(tcs) == 0 {
+		return nil
+	}
+	rel := filepath.Join(manifest.ToolsDir, runtime.GOOS+"_"+runtime.GOARCH)
+	for _, t := range tcs {
+		name := t.Name
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		exe := filepath.Join(unpack, rel, name)
+		if _, err := os.Stat(exe); err != nil {
+			return fmt.Errorf("清单声明 requires: [%s]，但包里没有 %s —— 打这个包的人忘了把工具链放进去",
+				t.Name, filepath.Join(rel, name))
+		}
+		if err := os.Chmod(exe, 0o755); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "正在把 %s 铺进 %s（用包里自带的那一份）…\n", t.Name, t.Home)
+		cmd := exec.Command(exe, "i", "-s", t.Home)
+		cmd.Dir = unpack
+		cmd.Stdout = out
+		cmd.Stderr = out
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("装 %s 失败：%w（它自己留下的东西 gpm 不动，见 D34）", t.Name, err)
+		}
+	}
+	return nil
+}
+
+// checkLauncherName 在写启动器之前挡住重名（FR-21）。
+//
+// 两道闸：账本里已经有别的包在用这个名字（跨 id 的比较），以及
+// <家>/bin/<cmd> 那儿已经有个不是 gpm 写的文件。任一命中都停手，
+// 要强行覆盖得明说 --force。
+func checkLauncherName(h *home.Home, led *ledger.Ledger, m *manifest.Manifest, force bool) error {
+	cmd := m.Launch.Cmd
+	if cmd == "gpm" {
+		return fmt.Errorf("简称 %q 是 gpm 自己用的，请换一个", cmd)
+	}
+	if other := led.FindByCmd(cmd); other != nil && other.ID != m.ID && !force {
+		return fmt.Errorf("命令名 %q 已经属于 %s（%s）。换个简称，或者先 `gpm uninstall %s`",
+			cmd, other.Name, other.ID, other.ID)
+	}
+	p := integrate.LauncherPath(h.Bin(), cmd, h.GOOS)
+	exists, ours, err := integrate.OwnedByGpm(p)
+	if err != nil {
+		return err
+	}
+	if exists && !ours && !force {
+		return fmt.Errorf("%s 已经存在，而且不是 gpm 写的：不动别人的东西（确实要覆盖，加 --force）", p)
+	}
 	return nil
 }
 

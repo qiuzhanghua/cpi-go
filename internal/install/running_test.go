@@ -157,7 +157,7 @@ func TestInstallRefusesToOverwriteWhileTheAppIsRunning(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(fakeHome, ".local", "share"))
 
 	dist := t.TempDir()
-	writeFixture(t, filepath.Join(dist, "manifest.yaml"), `id: demo
+	writeFixture(t, filepath.Join(dist, "demo-manifest.yaml"), `id: demo
 name: Demo
 version: 0.1.0
 entry:

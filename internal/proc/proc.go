@@ -28,7 +28,7 @@ type Process struct {
 // prefixes 是比对时要认的目录前缀。
 //
 // 给两个：账本里原样记着的那个路径，以及它解析软链之后的样子。
-// 进程报出来的路径是这两种之一，取决于 GPM_HOME 这条路上有没有软链。
+// 进程报出来的路径是这两种之一，取决于这个家这条路上有没有软链。
 func prefixes(dir string) []string {
 	if dir == "" {
 		return nil

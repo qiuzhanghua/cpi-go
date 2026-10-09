@@ -18,44 +18,141 @@ const (
 	markerEnd   = "# <<< gpm <<<"
 )
 
+// generatedMark 是所有由 gpm 写出来的文件都会带的一行。
+//
+// 它有两个用处：告诉用户别手改，以及让 gpm 认出「这个文件是我写的」。
+// 后者是 FR-21 的启动器重名检查要用的：不是我们写的文件，绝不覆盖。
+const generatedMark = "由 gpm 生成，请勿手工编辑。"
+
+// Toolchain 是启动器要注入环境的一家工具链。
+type Toolchain struct {
+	Name string // cot / tdp
+	Home string // 那一家自己的家目录（$COT_HOME / $TDP_HOME）
+}
+
+// Spec 描述一个终端启动器。
+type Spec struct {
+	BinDir     string      // <家>/bin
+	Cmd        string      // 简称，也就是终端里敲的名字
+	EntryAbs   string      // 入口绝对路径：.app 目录或可执行文件
+	Kind       string      // bundle / exe
+	GOOS       string      // darwin / linux / windows
+	Mode       string      // activate（缺省）/ direct
+	Toolchains []Toolchain // 要注入环境的工具链，来自清单的 requires
+}
+
+// LauncherPath 返回启动器该落在哪里。
+//
+// 用 filepath.Join 而不是写死分隔符：这个函数只在**目标机器上**被调用
+// （goos 就是本机），本机风格的分隔符正是要的那个。
+func LauncherPath(binDir, cmd, goos string) string {
+	if goos == "windows" {
+		return filepath.Join(binDir, cmd+".cmd")
+	}
+	return filepath.Join(binDir, cmd)
+}
+
+// OwnedByGpm 报告 path 处有没有文件、以及它是不是 gpm 写的。
+//
+// 「是不是 gpm 写的」只看那行生成标记：用户的 bin/ 里完全可能有别人装的
+// 同名命令，认标记比认路径可靠。
+func OwnedByGpm(path string) (exists, ours bool, err error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return true, strings.Contains(string(b), generatedMark), nil
+}
+
 // Launcher 写出终端启动器并返回它的路径。
 //
-//   - macOS + bundle + activate：exec open "<app>" --args "$@"，与双击等价
-//   - macOS + bundle + direct：直接跑 .app 内层二进制，拿得到 stdout 与退出码
-//   - 其他：直接 exec 入口
-//   - Windows：<cmd>.cmd 包装（.CMD 默认在 PATHEXT 里，双击也能用）
-func Launcher(binDir, cmd, entryAbs, kind, goos, mode string) (string, error) {
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+// macOS 上应用是 .app，有两种接法：
+//
+//   - 需要注入工具链环境（requires 非空）或 mode=direct：直接 exec .app
+//     内层的二进制。只有这条路能把环境交给应用进程 —— 实测 `open` 不传
+//     环境（C1 / D33）。
+//   - 没有工具链要注入、mode=activate（缺省）：仍然 `open`，保住 macOS 的
+//     原有语义（与双击等价、能激活已经在跑的实例、Dock 行为正常）。
+//
+// Windows 上写 <cmd>.cmd（.CMD 默认在 PATHEXT 里，双击也能用）。
+func Launcher(spec Spec) (string, error) {
+	if err := os.MkdirAll(spec.BinDir, 0o755); err != nil {
 		return "", err
 	}
-	if goos == "windows" {
-		p := filepath.Join(binDir, cmd+".cmd")
-		body := "@echo off\r\nrem 由 gpm 生成，请勿手工编辑。\r\n\"" + entryAbs + "\" %*\r\n"
-		return p, writeFile(p, body, 0o755)
+	p := LauncherPath(spec.BinDir, spec.Cmd, spec.GOOS)
+
+	if spec.GOOS == "windows" {
+		var b strings.Builder
+		b.WriteString("@echo off\r\n")
+		b.WriteString("rem " + generatedMark + "\r\n")
+		writeCmdEnv(&b, spec.Toolchains)
+		b.WriteString("\"" + spec.EntryAbs + "\" %*\r\n")
+		return p, writeFile(p, b.String(), 0o755)
 	}
 
-	var body string
-	switch {
-	case kind == "bundle" && goos == "darwin" && mode == "direct":
-		inner, err := BundleExecutable(entryAbs)
+	var b strings.Builder
+	if spec.Kind == "bundle" && spec.GOOS == "darwin" && spec.Mode != "direct" && len(spec.Toolchains) == 0 {
+		b.WriteString(header("与双击图标等价，能激活已经运行的实例。"))
+		b.WriteString("exec open " + shq(spec.EntryAbs) + " --args \"$@\"\n")
+		return p, writeFile(p, b.String(), 0o755)
+	}
+
+	target := spec.EntryAbs
+	comment := "直接运行。"
+	if spec.Kind == "bundle" && spec.GOOS == "darwin" {
+		inner, err := BundleExecutable(spec.EntryAbs)
 		if err != nil {
 			return "", err
 		}
-		body = header("直接运行 .app 内层二进制：拿得到 stdout、退出码与 Ctrl+C。") +
-			"exec " + shq(inner) + " \"$@\"\n"
-	case kind == "bundle" && goos == "darwin":
-		body = header("与双击图标等价，能激活已经运行的实例。") +
-			"exec open " + shq(entryAbs) + " --args \"$@\"\n"
-	default:
-		body = header("直接运行。") +
-			"exec " + shq(entryAbs) + " \"$@\"\n"
+		target = inner
+		comment = "直接运行 .app 内层二进制：只有这条路能把工具链环境交给应用进程。"
 	}
-	p := filepath.Join(binDir, cmd)
-	return p, writeFile(p, body, 0o755)
+	b.WriteString(header(comment))
+	b.WriteString(shEnv(spec.Toolchains))
+	b.WriteString("exec " + shq(target) + " \"$@\"\n")
+	return p, writeFile(p, b.String(), 0o755)
+}
+
+// shEnv 生成 POSIX sh 的环境注入：把工具链的家写进环境、把它的 bin 放进
+// PATH，再 source 它自己的 env-<name>.vars。
+//
+// 那个文件里只有 `export NAME=...` 这类变量赋值，没有插件命令，所以直接
+// source 是安全的（它正是给 shell 用的）。
+func shEnv(tcs []Toolchain) string {
+	var b strings.Builder
+	for _, t := range tcs {
+		if t.Home == "" {
+			continue
+		}
+		name := strings.ToUpper(t.Name)
+		bin := filepath.Join(t.Home, "bin")
+		b.WriteString(name + "_HOME=" + shq(t.Home) + "; export " + name + "_HOME\n")
+		b.WriteString("PATH=" + shq(bin) + ":$PATH; export PATH\n")
+		vars := filepath.Join(bin, "env-"+t.Name+".vars")
+		b.WriteString("if [ -f " + shq(vars) + " ]; then . " + shq(vars) + "; fi\n")
+	}
+	return b.String()
+}
+
+// writeCmdEnv 生成 cmd.exe 的环境注入。
+func writeCmdEnv(b *strings.Builder, tcs []Toolchain) {
+	for _, t := range tcs {
+		if t.Home == "" {
+			continue
+		}
+		name := strings.ToUpper(t.Name)
+		bin := t.Home + `\bin`
+		b.WriteString("set \"" + name + "_HOME=" + t.Home + "\"\r\n")
+		b.WriteString("set \"PATH=" + bin + ";%PATH%\"\r\n")
+		b.WriteString("if exist \"" + bin + "\\env-" + t.Name + ".bat\" call \"" + bin + "\\env-" + t.Name + ".bat\"\r\n")
+	}
 }
 
 func header(comment string) string {
-	return "#!/bin/sh\n# 由 gpm 生成，请勿手工编辑。\n# " + comment + "\n"
+	return "#!/bin/sh\n# " + generatedMark + "\n# " + comment + "\n"
 }
 
 // BundleExecutable 从 Info.plist 里读出 CFBundleExecutable 并拼出内层二进制路径。

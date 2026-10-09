@@ -1,10 +1,10 @@
-// Package pack 把一个「已经装配好的目录」（manifest.yaml + payload/）打成分发包。
+// Package pack 把一个「已经装配好的目录」打成分发包。
 //
-// 为什么这件事要收进 gpm、而不是留一个 shell 脚本：
-// 打包要做三件在跨平台上很难做对的事 —— 算 sha256、保住可执行位、处理符号链接。
-// Windows 的 Git Bash 里连 zip 都没有，sha256sum 也不保证有；而 macOS 的 .app
-// 内部是有符号链接的，普通 zip 会把它们展开成副本（甚至坏掉）。
-// gpm 本来就是跨平台的 Go 程序，同一份实现三个平台都一样。
+// 装配目录里该有的是：`<简称>-manifest.yaml`、`payload/`，带工具链的包
+// 再加 `tools/<os>_<arch>/`。打包要做三件在跨平台上很难做对的事 —— 算
+// sha256、保住可执行位、处理符号链接，所以它留在 gpm 里而不是一个 shell
+// 脚本里。Windows 的 Git Bash 里连 zip 都没有；而 macOS 的 .app 内部是有
+// 符号链接的，普通 zip 会把它们展开成副本（甚至坏掉）。
 package pack
 
 import (
@@ -47,6 +47,55 @@ func scriptDir(defaultDir, goos string) string {
 	return "$HOME" + rest
 }
 
+// homeName 认出「某家工具链的家」这种写法：`~/cot`、`~\tdp`、`~`。
+//
+// 只认清单允许的那两家（manifest.KnownRequires）：把 `--default-dir ~/ad`
+// 也变成 `$AD_HOME` 就等于替某个应用发明了一个环境变量。
+func homeName(p string) (string, bool) {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return "", false
+	}
+	rest := strings.Trim(p[1:], `/:\`)
+	if rest == "" || strings.ContainsAny(rest, `/:\`) {
+		return "", false
+	}
+	if !manifest.IsKnownRequire(rest) {
+		return "", false
+	}
+	return rest, true
+}
+
+// toolchainDir 是「某家工具链的家」在脚本里的写法：环境变量优先，缺省落到
+// 用户目录下的同名目录 —— 与 gpm 内部的 home.RequireHome 同一套规矩，
+// 所以用户在 shell 里设了 COT_HOME，双击安装脚本也认。
+func toolchainDir(req, goos string) (pre, arg string) {
+	name := strings.ToUpper(req) + "_HOME"
+	if goos == "windows" {
+		pre = "if not defined " + name + " set \"" + name + "=%USERPROFILE%\\" + req + "\"\n"
+		return pre, ` --dir "%` + name + `%"`
+	}
+	return "", ` --dir "${` + name + `:-$HOME/` + req + `}"`
+}
+
+// dirSpec 决定脚本里的 --dir 到底怎么写。
+//
+//	--default-dir 是工具链的家（~/cot）  → 走环境变量，#COT_HOME 能覆盖
+//	--default-dir 是别的路径             → 原样照抄（$HOME / %USERPROFILE% 展开）
+//	没给 --default-dir，但清单有 requires → 用第一家工具链的家
+//	都没有                                → 不传 --dir，交给 gpm 定（平台数据目录/<简称>）
+func dirSpec(defaultDir string, requires []string, goos string) (pre, arg string) {
+	if defaultDir != "" {
+		if name, ok := homeName(defaultDir); ok {
+			return toolchainDir(name, goos)
+		}
+		return "", ` --dir "` + scriptDir(defaultDir, goos) + `"`
+	}
+	if len(requires) > 0 {
+		return toolchainDir(requires[0], goos)
+	}
+	return "", ""
+}
+
 // InstallScript 是 install.sh 的原文。
 //
 // 它只做三件事：切到自己的目录、给 gpm 补可执行位、把安装交给 gpm。
@@ -54,21 +103,21 @@ func scriptDir(defaultDir, goos string) string {
 // Unix 权限位，用户也可能用别的方式解压。安装逻辑一行都不写在这里 ——
 // 写在这里就等于每个平台各维护一份，而它们迟早会不一致。
 //
-// defaultDir 是「装到哪儿」的默认值，由 `gpm pack --default-dir` 烘进来；
-// 留空表示打包方没有指定，那就交给 gpm 自己的相对路径默认值（当前目录）。
-// 无论如何 $GPM_HOME 的优先级都更高，用户能覆盖。
-func InstallScript(defaultDir string) string {
-	fallback := "."
-	if defaultDir != "" {
-		fallback = scriptDir(defaultDir, "linux")
-	}
+// 装到哪儿按这个次序定（与 D21 一致）：
+//
+//  1. --default-dir 烘进来的值（打包方明说）；写的是 `${COT_HOME:-$HOME/cot}`
+//     这种带环境变量兜底的写法，所以用户在 shell 里设的家仍然算数；
+//  2. 清单里 requires 的第一家工具链的家（$COT_HOME / $TDP_HOME，缺省 ~/cot、~/tdp）；
+//  3. 什么都不传 —— 交给 gpm 自己定（平台数据目录/<简称>）。
+func InstallScript(defaultDir string, requires []string) string {
+	_, dir := dirSpec(defaultDir, requires, "linux")
 	return fmt.Sprintf(`#!/bin/sh
 # 由 gpm pack 生成，请勿手工编辑。
 set -eu
 cd "$(dirname "$0")"
 chmod +x ./gpm 2>/dev/null || true
-exec ./gpm install . --dir "${GPM_HOME:-%s}"
-`, fallback)
+exec ./gpm install .%s
+`, dir)
 }
 
 // InstallBatch 是 install.cmd 的原文（Windows 用户双击这个）。
@@ -76,30 +125,27 @@ exec ./gpm install . --dir "${GPM_HOME:-%s}"
 // 在 Windows 上优先用 .cmd 而不是 .ps1：PowerShell 默认 ExecutionPolicy 是
 // Restricted，右键「使用 PowerShell 运行」常常直接报「在此系统上禁止运行脚本」，
 // 而 .cmd 双击就能跑。
-func InstallBatch(defaultDir string) string {
-	fallback := "."
-	if defaultDir != "" {
-		fallback = scriptDir(defaultDir, "windows")
-	}
+func InstallBatch(defaultDir string, requires []string) string {
+	pre, dir := dirSpec(defaultDir, requires, "windows")
 	return fmt.Sprintf(`@echo off
 rem 由 gpm pack 生成，请勿手工编辑。
 setlocal
 cd /d "%%~dp0"
-if not defined GPM_HOME set "GPM_HOME=%s"
-gpm.exe install . --dir "%%GPM_HOME%%"
+%sgpm.exe install .%s
 pause
-`, fallback)
+`, pre, dir)
 }
 
 // Options 是打一个包所需的全部输入。
 type Options struct {
-	Dir    string // 含 manifest.yaml 与 payload/ 的目录
+	Dir    string // 含 <简称>-manifest.yaml 与 payload/（必要时 tools/）的目录
 	Out    string // 输出 zip 路径；留空则 dist/<id>-<version>-<goos>-<goarch>.zip
 	GOOS   string // 目标平台；留空用当前平台
 	GOARCH string
 	Self   string // 要嵌进包里的 gpm 可执行文件；留空用当前进程
 	// DefaultDir 烘进 install.sh / install.cmd 的默认安装根，例如 ~/cot。
-	// 留空表示打包方不指定，落到 gpm 自己的相对路径默认值（解压出来的那个目录）。
+	// 留空表示打包方不指定：清单里有 requires 就装进那家工具链的家，
+	// 否则由 gpm 自己定（平台数据目录/<简称>）。
 	DefaultDir string
 	Log        io.Writer // 进度输出；留空则静默
 }
@@ -108,7 +154,7 @@ type Options struct {
 //
 // 产物的内容与顺序都已固定：
 //
-//	install.sh  install.cmd  gpm  manifest.yaml  SHA256SUMS  payload/…
+//	install.sh  install.cmd  gpm  <简称>-manifest.yaml  SHA256SUMS  payload/…  tools/…
 func Build(opt Options) (string, error) {
 	goos, goarch := opt.GOOS, opt.GOARCH
 	if goos == "" {
@@ -174,7 +220,7 @@ func Build(opt Options) (string, error) {
 	defer f.Close()
 
 	zw := zip.NewWriter(f)
-	err = writeAll(zw, dir, self, goos, opt.DefaultDir, sums)
+	err = writeAll(zw, dir, self, goos, opt.DefaultDir, sums, m)
 	if cerr := zw.Close(); err == nil {
 		err = cerr
 	}
@@ -190,13 +236,13 @@ func Build(opt Options) (string, error) {
 	return out, nil
 }
 
-func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte) error {
+func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte, m *manifest.Manifest) error {
 	when := time.Now()
 
-	if err := addBytes(zw, InstallSH, 0o755, []byte(InstallScript(defaultDir)), when); err != nil {
+	if err := addBytes(zw, InstallSH, 0o755, []byte(InstallScript(defaultDir, m.Requires)), when); err != nil {
 		return err
 	}
-	if err := addBytes(zw, InstallCMD, 0o644, []byte(InstallBatch(defaultDir)), when); err != nil {
+	if err := addBytes(zw, InstallCMD, 0o644, []byte(InstallBatch(defaultDir, m.Requires)), when); err != nil {
 		return err
 	}
 
@@ -213,42 +259,63 @@ func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte) e
 		return err
 	}
 
-	if err := addFile(zw, manifest.FileName, 0o644, filepath.Join(dir, manifest.FileName), when); err != nil {
+	// 清单名来自装配目录里那个真实文件（<简称>-manifest.yaml），不自己拼。
+	name := manifest.FileNameFor(m.Short())
+	if err := addFile(zw, name, 0o644, filepath.Join(dir, name), when); err != nil {
 		return err
 	}
 	if err := addBytes(zw, stage.SumsFile, 0o644, sums, when); err != nil {
 		return err
 	}
-	return addTree(zw, filepath.Join(dir, manifest.PayloadDir), manifest.PayloadDir, when)
+	if err := addTree(zw, filepath.Join(dir, manifest.PayloadDir), manifest.PayloadDir, when); err != nil {
+		return err
+	}
+
+	// 工具链是可选的：清单没写 requires 就不该有；写了就必须有（安装时会查）。
+	tools := filepath.Join(dir, manifest.ToolsDir)
+	if _, err := os.Stat(tools); err == nil {
+		return addTree(zw, tools, manifest.ToolsDir, when)
+	}
+	return nil
 }
 
-// sumsFor 生成 SHA256SUMS 的内容，路径相对包根（形如 `payload/AI Desk.app/…`），
-// 只覆盖 payload/ 下的常规文件 —— 符号链接不算，这一点要和 stage.VerifySums 一致。
+// sumsFor 生成 SHA256SUMS 的内容，路径相对包根（形如 `payload/AI Desk.app/…`
+// 或 `tools/darwin_arm64/cot`），只覆盖常规文件 —— 符号链接不算，这一点要和
+// stage.VerifySums 保持一致。工具链二进制也在覆盖范围内（D32）。
 func sumsFor(dir string) ([]byte, int, error) {
 	type entry struct{ path, sum string }
 	var entries []entry
 
-	root := filepath.Join(dir, manifest.PayloadDir)
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, sub := range []string{manifest.PayloadDir, manifest.ToolsDir} {
+		root := filepath.Join(dir, sub)
+		if _, err := os.Stat(root); err != nil {
+			// 没有 tools/ 是正常的：不带工具链的包。
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, 0, err
 		}
-		if d.IsDir() || d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			sum, err := stage.HashFile(p)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, entry{filepath.ToSlash(rel), sum})
 			return nil
-		}
-		rel, err := filepath.Rel(dir, p)
+		})
 		if err != nil {
-			return err
+			return nil, 0, err
 		}
-		sum, err := stage.HashFile(p)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, entry{filepath.ToSlash(rel), sum})
-		return nil
-	})
-	if err != nil {
-		return nil, 0, err
 	}
 	if len(entries) == 0 {
 		return nil, 0, fmt.Errorf("%s/ 里一个常规文件都没有", manifest.PayloadDir)

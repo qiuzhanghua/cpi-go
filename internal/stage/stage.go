@@ -129,9 +129,12 @@ func extractZip(src, dst string) error {
 	return nil
 }
 
-// VerifySums 校验 dir/SHA256SUMS，并要求 coverDir 下的每个常规文件都被覆盖。
+// VerifySums 校验 dir/SHA256SUMS，并要求 coverDirs 下每个常规文件都被覆盖。
 // 返回是否真的做了校验（没有 SHA256SUMS 时返回 false，由调用方决定是否警告）。
-func VerifySums(dir, coverDir string) (bool, error) {
+//
+// coverDirs 可以为空（只按清单逐条校验）。v3.5 起传 payload 与 tools 两个
+// 目录：工具链的二进制也随包发出去，它跟载荷一样要有出处可查。
+func VerifySums(dir string, coverDirs ...string) (bool, error) {
 	b, err := os.ReadFile(filepath.Join(dir, SumsFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -183,34 +186,37 @@ func VerifySums(dir, coverDir string) (bool, error) {
 		}
 	}
 
-	if coverDir == "" {
-		return true, nil
-	}
-	root := filepath.Join(dir, coverDir)
 	var missing []string
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, coverDir := range coverDirs {
+		if coverDir == "" {
+			continue
 		}
-		if d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+		root := filepath.Join(dir, coverDir)
+		err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			if _, ok := want[filepath.ToSlash(rel)]; !ok {
+				missing = append(missing, filepath.ToSlash(rel))
+			}
 			return nil
+		})
+		// 没有这个目录不算漏：不是每个包都带工具链。
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, err
 		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		if _, ok := want[filepath.ToSlash(rel)]; !ok {
-			missing = append(missing, filepath.ToSlash(rel))
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return false, fmt.Errorf("%s 没有覆盖 %s/ 下的这些文件，拒绝安装: %s",
-			SumsFile, coverDir, strings.Join(missing, ", "))
+		return false, fmt.Errorf("%s 没有覆盖这些文件，拒绝安装: %s",
+			SumsFile, strings.Join(missing, ", "))
 	}
 	return true, nil
 }

@@ -90,11 +90,12 @@ func main() {
 
 func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
-	dir := fs.String("dir", "", "装到哪个家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
+	dir := fs.String("dir", "", "装到哪个家（留空则按清单的 requires 决定）")
+	with := fs.String("with", "", "覆盖清单里的 requires，如 --with cot,tdp；--with 空串表示不装工具链")
 	yes := fs.Bool("yes", false, "不询问，直接做 PATH 集成")
 	noPath := fs.Bool("no-path", false, "完全不碰 PATH")
 	skip := fs.Bool("skip-verify", false, "跳过 SHA256SUMS 校验（只用于调试）")
-	force := fs.Bool("force", false, "要换掉的那个应用正在运行也照做（不推荐）")
+	force := fs.Bool("force", false, "应用正在运行、或命令名被别人占着也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm install <目录或 .zip> [选项]")
 		fs.PrintDefaults()
@@ -106,8 +107,20 @@ func cmdInstall(args []string) error {
 		fs.Usage()
 		return fmt.Errorf("需要且只需要一个参数：分发包路径")
 	}
+	// `--with ""` 与「没给 --with」是两件事：前者是「谁都不装」。
+	withSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "with" {
+			withSet = true
+		}
+	})
+	withList := splitList(*with)
+	if withSet && withList == nil {
+		withList = []string{}
+	}
 	return install.Install(fs.Arg(0), install.Options{
 		Dir:        *dir,
+		With:       withList,
 		Yes:        *yes,
 		NoPath:     *noPath,
 		SkipVerify: *skip,
@@ -115,9 +128,27 @@ func cmdInstall(args []string) error {
 	})
 }
 
+// splitList 把 `--with cot,tdp` 切成 ["cot" "tdp"]。
+//
+// 区分「没给这个选项」（nil，听清单的）与「给了空串」（空切片，谁都不装）：
+// 打包方调试「不装工具链」时正要用后者。
+func splitList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
+	dir := fs.String("dir", "", "家目录（留空则从 gpm 自己的位置推断）")
 	force := fs.Bool("force", false, "要删的那个应用正在运行也照做（不推荐）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm uninstall <id> [选项]")
@@ -135,7 +166,7 @@ func cmdUninstall(args []string) error {
 
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
+	dir := fs.String("dir", "", "家目录（留空则从 gpm 自己的位置推断）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm list [选项]")
 		fs.PrintDefaults()
@@ -148,7 +179,7 @@ func cmdList(args []string) error {
 
 func cmdWhere(args []string) error {
 	fs := flag.NewFlagSet("where", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
+	dir := fs.String("dir", "", "家目录（留空则从 gpm 自己的位置推断）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm where <id> [选项]")
 		fs.PrintDefaults()
@@ -169,9 +200,9 @@ func cmdPack(args []string) error {
 	goos := fs.String("os", "", "目标平台（默认当前平台）")
 	goarch := fs.String("arch", "", "目标架构（默认当前架构）")
 	self := fs.String("gpm", "", "要嵌进包里的 gpm 可执行文件（默认当前进程）")
-	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd 的默认安装根，如 ~/cot（留空则不指定）")
+	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd 的默认安装根，如 ~/cot（留空则按清单 requires 决定）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: gpm pack <含 manifest.yaml 与 payload/ 的目录> [选项]")
+		fmt.Fprintln(os.Stderr, "用法: gpm pack <含 <简称>-manifest.yaml 与 payload/ 的目录> [选项]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(reorder(fs, args)); err != nil {
@@ -199,7 +230,7 @@ func cmdPack(args []string) error {
 
 func cmdEnv(args []string) error {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	dir := fs.String("dir", "", "家目录（$GPM_HOME > 从 gpm 自己的位置推断 > 当前目录）")
+	dir := fs.String("dir", "", "家目录（留空则从 gpm 自己的位置推断）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm env [选项]   # 打印把 bin/ 加进 PATH 的 shell 片段")
 		fs.PrintDefaults()
@@ -219,7 +250,7 @@ func usage(w *os.File) {
 	fmt.Fprintf(w, `gpm %s —— GUI 应用安装器
 
 用法:
-  gpm install <目录或 .zip> [--dir PATH] [--yes] [--no-path] [--skip-verify] [--force]
+  gpm install <目录或 .zip> [--dir PATH] [--with cot,tdp] [--yes] [--no-path] [--skip-verify] [--force]
   gpm list
   gpm where <id>
   gpm uninstall <id> [--force]
@@ -227,15 +258,26 @@ func usage(w *os.File) {
   gpm env
   gpm version
 
-家目录按 --dir > $GPM_HOME > 从 gpm 自己的位置推断 > 当前目录 的顺序确定。
-装到哪儿通常是安装器（install.sh / install.cmd）传进来的，那个值由
-gpm pack --default-dir 烘进脚本；gpm 自己只认上面这个顺序。
+家目录按这个顺序确定（D21）：
+  --dir
+  > 清单里 requires 第一家的家（$COT_HOME / $TDP_HOME，缺省 ~/cot、~/tdp）
+  > 从 gpm 自己的位置推断
+  > 平台数据目录/<简称>（macOS ~/Library/Application Support，Windows %%LOCALAPPDATA%%，Linux ~/.local/share）
+  > 当前目录
+
+装到哪儿通常由安装器（install.sh / install.cmd）传进来，那个值来自
+gpm pack --default-dir 或清单里的 requires；gpm 自己只认上面这个顺序。
+清单里没有 requires 时，GUI 应用没有工具链可以借住，就走平台惯例。
 
 「从 gpm 自己的位置推断」是给装完之后用的：布局规定带 GUI 的应用住在
 <家目录>/lib，而 gpm 与终端启动器这类没有图形界面的小东西住在 <家目录>/bin。
 于是 <家目录>/bin/gpm 这个位置本身就把家目录说出来了 —— 用户在新终端里
 敲 gpm list / gpm where / gpm uninstall 时不必带 --dir，也不必让 shell
-一直替 gpm 记着 GPM_HOME。判据要求所在目录正好叫 bin、文件名正好是 gpm、
+一直替 gpm 记着什么环境变量。判据要求所在目录正好叫 bin、文件名正好是 gpm、
 且上一级有账本 state.json，免得把 /usr/local/bin/gpm 这种地方误当成家目录。
+
+清单里的 requires（cot / tdp）说的是：这个包自带那家工具链（zip 里的
+tools/<os>_<arch>/），装完要让它的命令也能用。装的时候会在那个家里跑一次
+「<名字> i -s <家>」，那一步不联网；工具链的东西不进 gpm 的账本，卸载也不动它。
 `, version)
 }

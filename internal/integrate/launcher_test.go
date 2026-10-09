@@ -10,10 +10,18 @@ import (
 )
 
 // mustLauncher 跑一次 Launcher 并把生成的文件内容读出来。
-func mustLauncher(t *testing.T, cmd, entryAbs, kind, goos, mode string) (string, string) {
+func mustLauncher(t *testing.T, cmd, entryAbs, kind, goos, mode string, tcs ...Toolchain) (string, string) {
 	t.Helper()
 	binDir := t.TempDir()
-	p, err := Launcher(binDir, cmd, entryAbs, kind, goos, mode)
+	p, err := Launcher(Spec{
+		BinDir:     binDir,
+		Cmd:        cmd,
+		EntryAbs:   entryAbs,
+		Kind:       kind,
+		GOOS:       goos,
+		Mode:       mode,
+		Toolchains: tcs,
+	})
 	if err != nil {
 		t.Fatalf("Launcher(%s/%s/%s): %v", kind, goos, mode, err)
 	}
@@ -105,7 +113,7 @@ func TestLauncherDarwinBundleDirectRejectsBrokenPlist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Launcher(t.TempDir(), "ad", app, "bundle", "darwin", "direct"); err == nil {
+	if _, err := Launcher(Spec{BinDir: t.TempDir(), Cmd: "ad", EntryAbs: app, Kind: "bundle", GOOS: "darwin", Mode: "direct"}); err == nil {
 		t.Fatal("Info.plist 指向不存在的内层文件，Launcher 却成功了")
 	}
 }
@@ -169,5 +177,112 @@ func TestLauncherQuotesAwkwardPaths(t *testing.T) {
 	out, err := exec.Command(sh, "-n", p).CombinedOutput()
 	if err != nil {
 		t.Errorf("sh -n 不认这个启动器：%v\n%s", err, out)
+	}
+}
+
+// 有工具链要注入时，macOS 的 bundle 也必须直接 exec 内层二进制：
+// `open` 不把环境交给应用（实测，见 D33 / C1）。
+func TestLauncherDarwinBundleWithToolchainSkipsOpen(t *testing.T) {
+	app := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(app, "Contents", "MacOS"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(app, "Contents", "MacOS", "ai-desk")
+	if err := os.WriteFile(inner, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plist := `<?xml version="1.0"?><plist><dict>
+	<key>CFBundleExecutable</key><string>ai-desk</string>
+	</dict></plist>`
+	if err := os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte(plist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, body := mustLauncher(t, "ad", app, "bundle", "darwin", "activate",
+		Toolchain{Name: "cot", Home: "/Users/q/cot"})
+
+	if strings.Contains(body, "exec open ") {
+		t.Errorf("有工具链要注入时不该走 open：%q", body)
+	}
+	if !strings.Contains(body, inner) {
+		t.Errorf("没有 exec 内层二进制：%q", body)
+	}
+	if !strings.Contains(body, `COT_HOME='/Users/q/cot'; export COT_HOME`) {
+		t.Errorf("没注入 COT_HOME：%q", body)
+	}
+	if !strings.Contains(body, `PATH='/Users/q/cot/bin':$PATH; export PATH`) {
+		t.Errorf("没把工具链的 bin 放进 PATH：%q", body)
+	}
+	if !strings.Contains(body, `. '/Users/q/cot/bin/env-cot.vars'`) {
+		t.Errorf("没有 source env-cot.vars：%q", body)
+	}
+}
+
+// 注入进去的脚本必须是语法正确的：交给真 shell 判。
+func TestLauncherToolchainEnvIsValidSh(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("这台机器上没有 sh")
+	}
+	_, body := mustLauncher(t, "ad", "/opt/ai-desk", "exe", "linux", "",
+		Toolchain{Name: "cot", Home: "/Users/q/it's cot"},
+		Toolchain{Name: "tdp", Home: "/Users/q/tdp"})
+	p := filepath.Join(t.TempDir(), "ad")
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(sh, "-n", p).CombinedOutput(); err != nil {
+		t.Errorf("sh -n 不认这个启动器：%v\n%s", err, out)
+	}
+}
+
+// Windows 上环境用 set 注入。
+func TestLauncherWindowsInjectsEnv(t *testing.T) {
+	_, body := mustLauncher(t, "ad", `C:\ad\ad.exe`, "exe", "windows", "",
+		Toolchain{Name: "cot", Home: `C:\Users\q\cot`})
+
+	if !strings.Contains(body, `set "COT_HOME=C:\Users\q\cot"`) {
+		t.Errorf("没注入 COT_HOME：%q", body)
+	}
+	if !strings.Contains(body, `set "PATH=C:\Users\q\cot\bin;%PATH%"`) {
+		t.Errorf("没把工具链的 bin 放进 PATH：%q", body)
+	}
+	if !strings.Contains(body, `call "C:\Users\q\cot\bin\env-cot.bat"`) {
+		t.Errorf("没有 call env-cot.bat：%q", body)
+	}
+}
+
+// OwnedByGpm 只认那行生成标记：别人的同名文件不能被当成我们的。
+func TestOwnedByGpm(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "ours")
+	if err := os.WriteFile(ours, []byte("#!/bin/sh\n# 由 gpm 生成，请勿手工编辑。\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(dir, "theirs")
+	if err := os.WriteFile(theirs, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing")
+
+	if exists, mine, err := OwnedByGpm(ours); err != nil || !exists || !mine {
+		t.Errorf("ours: exists=%v ours=%v err=%v，想要 true/true/nil", exists, mine, err)
+	}
+	if exists, mine, err := OwnedByGpm(theirs); err != nil || !exists || mine {
+		t.Errorf("theirs: exists=%v ours=%v err=%v，想要 true/false/nil", exists, mine, err)
+	}
+	if exists, mine, err := OwnedByGpm(missing); err != nil || exists || mine {
+		t.Errorf("missing: exists=%v ours=%v err=%v，想要 false/false/nil", exists, mine, err)
+	}
+}
+
+// LauncherPath 在 Windows 上加 .cmd。
+func TestLauncherPath(t *testing.T) {
+	dir := t.TempDir()
+	if got, want := LauncherPath(dir, "ad", "darwin"), filepath.Join(dir, "ad"); got != want {
+		t.Errorf("darwin = %q，想要 %q", got, want)
+	}
+	if got, want := LauncherPath(dir, "ad", "windows"), filepath.Join(dir, "ad.cmd"); got != want {
+		t.Errorf("windows = %q，想要 %q", got, want)
 	}
 }

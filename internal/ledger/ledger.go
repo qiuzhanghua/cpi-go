@@ -1,4 +1,4 @@
-// Package ledger 读写 <GPM_HOME>/state.json。
+// Package ledger 读写 <家>/state.json（v3.5 起这个家就是 $COT_HOME / $TDP_HOME）。
 //
 // 账本是所有外部副作用（启动器、软链、shell 配置标记块）的唯一真相，
 // 卸载就是回放这份记录。
@@ -95,6 +95,22 @@ func (l *Ledger) Save(path string) error {
 func (l *Ledger) Find(id string) *Package {
 	for i := range l.Packages {
 		if l.Packages[i].ID == id {
+			return &l.Packages[i]
+		}
+	}
+	return nil
+}
+
+// FindByCmd 按终端命令名找包。
+//
+// 命令名住在 <家>/bin 这个共用命名空间里，两个包用同一个简称就会互相
+// 覆盖启动器，所以这个名字要能跨 id 查（FR-21）。
+func (l *Ledger) FindByCmd(cmd string) *Package {
+	if cmd == "" {
+		return nil
+	}
+	for i := range l.Packages {
+		if l.Packages[i].Cmd == cmd {
 			return &l.Packages[i]
 		}
 	}

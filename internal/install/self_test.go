@@ -71,7 +71,7 @@ func TestInstallSelfKeepsExistingGpm(t *testing.T) {
 	}
 }
 
-// 装配目录：manifest.yaml + payload/，按当前平台给一个能装的入口。
+// 装配目录：<简称>-manifest.yaml + payload/，按当前平台给一个能装的入口。
 func assembly(t *testing.T) string {
 	t.Helper()
 	asm := t.TempDir()
@@ -95,7 +95,7 @@ func assembly(t *testing.T) string {
 			"id: demo\nname: Demo\nversion: 0.1.0\nentry:\n  %s:\n    exe: %s\nlaunch:\n  cmd: demo\n",
 			runtime.GOOS, name)
 	}
-	writePayload(t, filepath.Join(asm, "manifest.yaml"), manifest, 0o644)
+	writePayload(t, filepath.Join(asm, "demo-manifest.yaml"), manifest, 0o644)
 	return asm
 }
 
