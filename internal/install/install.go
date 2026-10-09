@@ -118,10 +118,15 @@ func Install(src string, opt Options) error {
 
 	// 工具链先装（F3 的顺序）：它要是装不上，应用这边一个字节都还没动，
 	// 用户看到的是「什么都没发生」，而不是半个应用。
-	if err := installToolchains(unpack, tcs, out); err != nil {
+	//
+	// 反过来，这一步写下的东西不进下面那个退栈（v3.8）：工具链归它自己管
+	// （D34），后面哪一步失败、回滚，只回滚 GUI 那部分 —— cot 说不定用户早
+	// 就装好了，凭什么因为这次装 GUI 不成把它删掉。
+	if err := installToolchains(unpack, tcs, opt.Force, out); err != nil {
 		if freshHome {
 			// 先把 staging 里那半份载荷清掉，DropIfEmpty 才收得回去
-			// —— 它只删空目录，免得不小心带走别人的东西。
+			// —— 它只删空目录，免得不小心带走别人的东西；工具链自己写下的
+			// 东西也一律留着（v3.8）。
 			os.RemoveAll(unpack)
 			h.DropIfEmpty()
 		}
@@ -149,6 +154,8 @@ func Install(src string, opt Options) error {
 		return err
 	}
 
+	// 这个退栈只管 GUI 那部分（v3.8）：入口、启动器、图形入口、PATH 标记块。
+	// 工具链写下的东西不在这儿 —— 它归工具链自己管（D34）。
 	var rollback []func()
 	fail := func(err error) error {
 		for i := len(rollback) - 1; i >= 0; i-- {
@@ -307,10 +314,14 @@ func toolchainsFor(h *home.Home, requires []string) []integrate.Toolchain {
 // （与同一个框架的 tdp）的 install 只要一个目录参数，-s 是 --silence。
 // 这一步不联网 —— 工具链的二进制就在包里，它只把自个儿铺进家目录（C3）。
 //
+// 已经装好就跳过（v3.8）：家的 bin/ 里已经有这家工具链的命令，就说明这台
+// 机器上早装过了 —— 很可能是用户自己装的，版本说不定比包里这份还新，没必要
+// 再搬一遍。要强制重铺，加 --force。
+//
 // 归属边界（D34）：这一步写下的东西不进 gpm 的账本，卸载也不回放。那是
 // 工具链自己的东西，归它自己的命令管（cot use / cot rm）。gpm 只负责把
 // 它搬来；装到一半失败时，除了刚建出来的空骨架，gpm 不去猜哪些是它的。
-func installToolchains(unpack string, tcs []integrate.Toolchain, out io.Writer) error {
+func installToolchains(unpack string, tcs []integrate.Toolchain, force bool, out io.Writer) error {
 	if len(tcs) == 0 {
 		return nil
 	}
@@ -319,6 +330,12 @@ func installToolchains(unpack string, tcs []integrate.Toolchain, out io.Writer) 
 		name := t.Name
 		if runtime.GOOS == "windows" {
 			name += ".exe"
+		}
+		if !force {
+			if fi, err := os.Stat(filepath.Join(t.Home, "bin", name)); err == nil && !fi.IsDir() {
+				fmt.Fprintf(out, "已经装好 %s（%s），跳过。\n", t.Name, filepath.Join(t.Home, "bin", name))
+				continue
+			}
 		}
 		exe := filepath.Join(unpack, rel, name)
 		if _, err := os.Stat(exe); err != nil {

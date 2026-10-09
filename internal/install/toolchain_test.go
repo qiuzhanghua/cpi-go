@@ -269,3 +269,107 @@ func TestInstallRefusesGpmAsCmd(t *testing.T) {
 		t.Errorf("报错没提 gpm：%v", err)
 	}
 }
+
+// 已经装好就不用再装（v3.8）：家的 bin/ 里已经有这家工具链的命令，说明这台
+// 机器上早装过了 —— 用户自己装的那份版本说不定还新些，别去动它。
+func TestInstallSkipsToolchainAlreadyInstalled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("这套用例用 shell 脚本假装工具链")
+	}
+	home := fakeHome(t)
+	root := installHome(home)
+
+	// 这台机器上早就有 cot 了。
+	old := filepath.Join(root, "bin", "cot")
+	writePayload(t, old, "#!/bin/sh\necho 老的 cot\n", 0o755)
+
+	// 包里那份要是被跑了，就会留下这个印子。
+	asm := toolchainAssembly(t, "ai-desk", "ad", "cot", "#!/bin/sh\nprintf ran > \"$HOME/ran\"\n")
+
+	var log strings.Builder
+	if err := Install(asm, Options{Yes: true, NoPath: true, Out: &log}); err != nil {
+		t.Fatalf("安装失败：%v\n%s", err, log.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "ran")); !os.IsNotExist(err) {
+		t.Errorf("已经装好了却又跑了一遍包里的工具链：%v", err)
+	}
+	if !strings.Contains(log.String(), "跳过") {
+		t.Errorf("没告诉用户工具链那一步跳过了：\n%s", log.String())
+	}
+	if b, _ := os.ReadFile(old); !strings.Contains(string(b), "老的 cot") {
+		t.Errorf("家里那份 cot 被动过：%q", b)
+	}
+	// 这一条只影响工具链那一步，应用照装。
+	if _, err := os.Stat(filepath.Join(root, "bin", "ad")); err != nil {
+		t.Errorf("应用没装上：%v", err)
+	}
+}
+
+// 想强制重铺工具链，加 --force。
+func TestInstallForceReinstallsToolchain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("这套用例用 shell 脚本假装工具链")
+	}
+	home := fakeHome(t)
+	root := installHome(home)
+	writePayload(t, filepath.Join(root, "bin", "cot"), "#!/bin/sh\necho 老的 cot\n", 0o755)
+
+	asm := toolchainAssembly(t, "ai-desk", "ad", "cot", "#!/bin/sh\nprintf ran > \"$HOME/ran\"\n")
+
+	if err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard, Force: true}); err != nil {
+		t.Fatalf("安装失败：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ran")); err != nil {
+		t.Errorf("--force 之后没重铺工具链：%v", err)
+	}
+}
+
+// 失败回滚只管 GUI 那部分（v3.8 / D34）：工具链是它自己的东西，不回滚。
+// 这里让工具链跑成功，再让 GUI 那一步撞上家里别人的同名入口。
+func TestInstallKeepsToolchainWhenGuiPartFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("这套用例用 shell 脚本假装工具链")
+	}
+	home := fakeHome(t)
+	root := installHome(home)
+	script := `#!/bin/sh
+set -eu
+home="$3"
+mkdir -p "$home/bin"
+printf '#!/bin/sh\necho cot\n' > "$home/bin/cot"
+chmod +x "$home/bin/cot"
+`
+	asm := toolchainAssembly(t, "ai-desk", "ad", "cot", script)
+
+	// 家里已经有一个不是 gpm 装的同名入口（清单里入口叫 demo）。
+	theirs := filepath.Join(root, "demo", "keep")
+	writePayload(t, theirs, "别人的东西\n", 0o644)
+
+	err := Install(asm, Options{Yes: true, NoPath: true, Out: io.Discard})
+	if err == nil {
+		t.Fatal("入口被别人的东西占着，却装成功了")
+	}
+	if !strings.Contains(err.Error(), "已经存在") {
+		t.Errorf("报错没说清是撞了别人的东西：%v", err)
+	}
+
+	// 工具链写下的东西留着（它是它自己的东西，说不定以前就装好了）。
+	if _, err := os.Stat(filepath.Join(root, "bin", "cot")); err != nil {
+		t.Errorf("回滚把工具链的东西带走了：%v", err)
+	}
+	// 别人的东西也没动。
+	if b, err := os.ReadFile(theirs); err != nil || string(b) != "别人的东西\n" {
+		t.Errorf("别人的东西被动过：%q %v", b, err)
+	}
+	// GUI 那部分一个字节都没留下：没有启动器，账本里也没有这个包。
+	if _, err := os.Stat(filepath.Join(root, "bin", "ad")); !os.IsNotExist(err) {
+		t.Errorf("回滚没删掉启动器：%v", err)
+	}
+	led, err := ledger.Load(ledgerPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(led.Packages) != 0 {
+		t.Errorf("这次失败却记了账：%+v", led.Packages)
+	}
+}

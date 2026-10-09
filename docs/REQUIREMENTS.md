@@ -1,10 +1,12 @@
 # gpm 需求文档
 
-> §1–§2 由我手工填写，一字未改；§3–§8 是讨论后的草稿。全文已落进 [`DESIGN.md`](DESIGN.md) v3.6 并**实现完成**（M10 + M11，`go vet` + `go test ./...` 全绿，本机跑通端到端）；只剩 §7 里三条设计问题跟着 DESIGN 的 O14–O16 走。
+> §1–§2 由我手工填写，一字未改；§3–§8 是讨论后的草稿。全文已落进 [`DESIGN.md`](DESIGN.md) 并**实现完成**（M10–M13，`go vet` + `go test ./...` 全绿，本机跑通端到端）；§7 里原来的三条设计问题（7-2 已装好判据、7-3 回滚范围、7-5 的加锁）已由用户裁决、v3.8 落地，新增 7-6。
 >
 > **v3.6 改了一处落地位置**（用户裁决，DESIGN D35）：GUI 应用的入口落**家目录顶层**（`<根>/AI Desk.app`），不再进 `lib/<id>_<版本>_<平台>/`——那句话原话是"GUI 程序不放到命令行程序中类似的位置"。`payload/` 根下只许有入口一个条目；入口名不许撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）；家里已有别人的同名东西时拒绝、`--force` 才放行。下文凡出现 `lib/<id>_…` 的地方，都已按此改过（历史上 v3.5 是这样，理由见 DESIGN §0.3.6）。
 >
 > **v3.7 给账本改了名字**（用户裁决，DESIGN D36）：`<根>/<家目录名>-state.json`（`~/cot/cot-state.json`）。用户原话是"state.json 和 manifest 一样改名字"——manifest 那份附件用简称，账本这份用家目录名（一个家里可能装好几个应用，用简称会让同一家冒出好几本账）。旧 `state.json` 仍可读、写回时迁移，不需要手工搬；下文凡提账本的地方都已按此改过。
+>
+> **v3.8 定了三件事**（[`DESIGN.md`](DESIGN.md) D37/D38、§0.3.8）：① **工具链已经装好就跳过**——`<根>/bin/cot`（或 `tdp`）已经是文件时不再跑包里自带的那一份，`--force` 才重铺；跳过不影响 PATH 集成，"`~/cot` 已经好了但 `.profile` 没改好"就把 rc 补好（用户原话："本机已经安装好，并且修改了 .profile 之类的文件，就不用再安装；如果 ~/cot 之类的地方已经安装好了，但是 .profile 之类的文件没有修改，则修改好"）；② **失败回滚只回滚 GUI 那部分**，命令行部分（cot 等）不回滚（"说不定以前就安装好了"）；③ **账本写回之前比对原文**（不引锁文件）——命名解决的是归属与撞名，不解决并发写；被别人动过就让这次操作失败、提示重跑。
 
 ## 1. 背景与动机
 我已经开发了cot_cli与tdp-cli，都是给程序员用的开发和管理工具。现在要给非开发人员准备带GUI的Desktop工具。
@@ -32,11 +34,11 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 **F2 工具链依赖声明（新增字段）**：`<简称>-manifest.yaml` 新增 `requires:` 列表，取值限 `cot` / `tdp`，缺省为空 = 不装工具链，安装根退到平台数据目录 + 简称；**PATH 集成照做**（简称启动器要能在终端里敲，那是 §2 的原话）。**以字段为准**；install.sh 可接受 `--with cot[,tdp]` 作为覆盖（对应 §2"如果参数是 cot"的写法）。该字段同时决定安装根（见上）。
 
-**F3 安装顺序与原子性**：顺序固定为 解析 manifest → 装工具链（F4/F5）→ 装 GUI 应用（F8）→ PATH 集成（F6）。工具链步骤失败则**不继续**，整体以非 0 退出，并回滚到运行前状态：不写 rc 块、不建启动器、不建软链、不记账本。
+**F3 安装顺序与原子性**：顺序固定为 解析 manifest → 装工具链（F4/F5）→ 装 GUI 应用（F8）→ PATH 集成（F6）。工具链步骤失败则**不继续**，整体以非 0 退出，并回滚到运行前状态：不写 rc 块、不建启动器、不建软链、不记账本。**v3.8 明确回滚范围**（用户裁决）：只回滚 GUI 那部分；工具链自己已经写下的东西（`bin/cot`、`env-cot*` 等）一律留着——"说不定以前就安装好了"（[`DESIGN.md`](DESIGN.md) D34/D37、FR-25）。
 
 **F4 工具链自举（zip 自带、离线）**：zip 自带对应平台的可执行文件（放 `<包>/tools/<os>_<arch>/{cot,tdp}`）。install.sh 按 `requires` 分派：`cot` → `cot i -s "${COT_HOME:-$HOME/cot}"`；`tdp` → `tdp i -s "${TDP_HOME:-$HOME/tdp}"`（Windows 用 `%COT_HOME%` / `%TDP_HOME%`）。gpm 不代为下载、不查询版本、不联网。落地的资产见 C3。
 
-**F5 已装则跳过**：gpm 不自己发明"装没装"的判据，每次都调 `cot i -s <根>`，由 cot 自己决定——目录在就走版本比较、相同或更新就打印一句并以 0 退出（C5），所以重复安装天然幂等；`--force` 透传给 cot 才强制覆盖。
+**F5 已装则跳过（v3.8 改写）**：判据就是"`<根>/bin/cot`（tdp 则 `<根>/bin/tdp`；Windows 加 `.exe`）在不在"——在就**不跑**包里自带的那一份，只打印一行"已经装好 …，跳过"，重复安装天然幂等；`--force` 才照包里那份重铺。**只查"在不在"，不做版本比较**（清单里没有版本约束字段，见 7-6）：原来"交给 `cot i -s` 自己比较版本"的方案（C3/C5）被用户裁决取代——"就不用再安装"。**跳过自举不等于跳过 PATH 集成**：rc 里没有 `# >>> gpm >>>` 块就补上（F6）。
 
 **F6 PATH 集成（沿用 D26）**：把 `<根>/bin` 加入 PATH —— 该目录同时住着 `cot`、`tdp`、`<简称>` 启动器与 `gpm`。写之前仍必须用人话请求许可，拒绝则降级；沿用 `# >>> gpm >>>` 幂等块与 D26 的文件集合（macOS 按 `$SHELL` 写 `~/.zprofile` + `~/.zshrc` + `~/.profile`，Windows 写 `HKCU\Environment` 的 `Path`）。
 
@@ -81,19 +83,20 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **C6** Windows 上把 exe 拷进 `%COT_HOME%\bin\cot.exe` 时 `CopyFileEx` 可能被拒（源码注释记录实测 `os error 5`），实现必须走"临时文件 + 改名"回退。
 - **C7 根就是 `$COT_HOME` / `$TDP_HOME`**：因此 `<根>/bin` 就是 `~/cot/bin`，里面同时住着 `cot`、`tdp`、`gpm`（D29 自装）与 `<简称>` 启动器；PATH 只需一条；`RootFromSelf()` 的三条判据（目录叫 bin、文件叫 gpm、上一级有账本——v3.7 的 `<家目录名>-state.json`，v3.6 及以前的 `state.json` 也认）在此仍然成立。
 - **C8** `ac` 已被占用：`/usr/sbin/ac`（macOS 登录记账）。
-- **C9** 账本字段固定为 `schemaVersion` / `self` / `packages[…]`，卸载靠它回放（D28）；**v3.7 起它落在 `<根>/<家目录名>-state.json`**（`~/cot/cot-state.json`、`~/Library/Application Support/ad/ad-state.json`）。v3.6 及以前的 `<根>/state.json` 仍可读，写回时迁到新名字并删掉旧文件（D36）。
+- **C9** 账本字段固定为 `schemaVersion` / `self` / `packages[…]`，卸载靠它回放（D28）；**v3.7 起它落在 `<根>/<家目录名>-state.json`**（`~/cot/cot-state.json`、`~/Library/Application Support/ad/ad-state.json`）。v3.6 及以前的 `<根>/state.json` 仍可读，写回时迁到新名字并删掉旧文件（D36）。**v3.8 起写回之前会比对这次读进来的原文**：被别人改过 / 挪走 / 期间被别人建出来就拒绝写、让本次操作失败（D38、R16）。
 - **C10** 不得依赖网络（N1）。
 - **C11** 本机 `~/cot/bin/activate` 里 `TDP_HOME=${COT_HOME}` 是**兼容性**设置（用户明确），不是"tdp 的家"：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（默认 `~/tdp`），启动器注入环境时照此办理（F7）。
 
 ## 7. 待确认
 
-> 已定（用户裁决）：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（C11）；`~/cot/lib` 保持空着、不多装插件（X2）；去掉 `~/ad`（X4）；macOS 注入走直接 exec（F7）；**`requires` 为空时用简称、缺省装到平台数据目录**（7-1）；**`ac` 只是举例、重名一律按 F10 拒绝**（7-4）。前两条已实现并验收（A15、A16）。
+> 已定（用户裁决）：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（C11）；`~/cot/lib` 保持空着、不多装插件（X2）；去掉 `~/ad`（X4）；macOS 注入走直接 exec（F7）；**`requires` 为空时用简称、缺省装到平台数据目录**（7-1）；**`ac` 只是举例、重名一律按 F10 拒绝**（7-4）；**v3.8 把原来的三条待确认也定了**：7-2（已装好判据，F5/D37）、7-3（回滚范围，F3/D37）、7-5 的加锁部分（不做锁，改原文比对，D38）；7-6 是新增的待确认（清单要不要能表达版本约束）。前两条已实现并验收（A15、A16）。
 
 - ~~**7-1** `requires` 为空的 GUI 应用装到哪个根？~~ **已定（用户）**：用简称、缺省装到平台数据目录（macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）；这时 gpm 是那个目录的建立者，装失败要把它收回去（`home.DropIfEmpty()`）。见 DESIGN D21、§2.3。
-- **7-2（阻塞 F5 验收）**"已装好则跳过"的判定：**已按"不发明判据"实现**——一律调 `cot i -s <根>`，由 cot 自己的版本比较决定（F5、C5）。剩下的设计问题是：要不要在跳过时给用户一行"用了哪一份 cot（版本）"，见 DESIGN O14。
-- **7-3**"不继续"时回滚的范围：**已按"全部回滚、不留半成品"实现**（工具链失败 → 逆序回滚 + 收回本次新建的空家）。剩下的设计问题是超出本次安装范围的东西要不要也更着撤（DESIGN O15）。
+- ~~**7-2（阻塞 F5 验收）**"已装好则跳过"的判定~~ **已定（用户）**：`<根>/bin/cot`（Windows `cot.exe`）在就跳过自举、`--force` 才重铺；不发明版本判据（F5、[`DESIGN.md`](DESIGN.md) D37、O14 关闭）。用户原话："本机已经安装好，并且修改了 .profile 之类的文件，就不用再安装"。
+- ~~**7-3**"不继续"时回滚的范围~~ **已定（用户）**：GUI 部分全部回滚，命令行部分（cot 等）不回滚；工具链写下的东西留着，只有本次新建的空家才收回去（F3、[`DESIGN.md`](DESIGN.md) D34/D37、O15 关闭）。用户原话："GUI 部分全部回滚，但是命令行部分如 cot，不回滚，说不定以前就安装好了"。
 - ~~**7-4** 撞名简称（`ac`）怎么处理：拒绝安装 / 自动改名 / 仅警告？~~ **已定（用户）**：`ac` 只是举例、不单独裁决；重名一律报错拒绝、`--force` 才覆盖（F10，DESIGN FR-21、R4、O3 关闭）。
-- **7-5** ~~`<根>/state.json` 与 cot 共享 `~/cot` 目录：是否需要给账本改名或加锁？~~ **改名部分已决**（v3.7、D36）：账本按家命名 `<根>/<家目录名>-state.json`，不再用放之四海皆可的 `state.json`；**加锁仍未决**，见 DESIGN O14–O16。
+- ~~**7-5** `<根>/state.json` 与 cot 共享 `~/cot` 目录：是否需要给账本改名或加锁？~~ **两条都已定**：改名（v3.7、D36）账本按家命名 `<根>/<家目录名>-state.json`，不再用放之四海皆可的 `state.json`；**加锁不做**（v3.8、D38）——命名解决归属与撞名、不解决并发写，改成"写回前比对原文、被别人动过就失败重跑"（[`DESIGN.md`](DESIGN.md) R16）。用户问的原话："State.json 还需要考虑加锁吗？靠命名的改变是不是已经解决了这个问题"。
+- **7-6（新增）** 清单要不要能表达**版本约束**（比如 `requires: {cot: ">=2.1"}`）：现在只有"在不在"这一条判据，已经装在家里的 cot 比包里旧也不会被换掉（F5、D37）。真要"至少 2.1"就得给清单加字段，同时定"谁来判断版本"——gpm 去解析 `cot --version`，还是交给 `cot i -s` 自己比较（[`DESIGN.md`](DESIGN.md) O17）。
 
 ## 8. 验收标准
 
@@ -102,7 +105,7 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **A3** 幂等：连跑两次 install.sh，上述三个 rc 文件、`~/cot/bin/ad`、软链、账本（`~/cot/cot-state.json`）的 packages 段不变。
 - **A4** `gpm list` 含 ai-desk；账本（`<根>/<家目录名>-state.json`）entry 指向 `.app`、`cmd=ad`、`verified=true`。
 - **A18** 账本改名与迁移（v3.7）：装完账本是 `<根>/<家目录名>-state.json`；把账本手工改回旧名 `state.json` 后 `gpm list` 仍认得这个家、也读得到里面的包，再 `gpm uninstall` 一次 → 新名字写出来、旧文件消失（`internal/ledger/ledger_test.go` 四条用例 + 真机验证见 DESIGN §3）。
-- **A5** 跳过：预置一个可用的 `~/cot`（含 `env-cot` 等资产）后再装：`~/cot/bin/cot` 的 mtime 不变，安装仍成功（exit 0）。
+- **A5** 跳过（v3.8 改写）：预置一个可用的 `~/cot/bin/cot`（含 `env-cot` 等资产）后再装：输出含"已经装好 cot（…），跳过。"；包里那份假 cot **没有被调用**（标记文件不出现）；`~/cot/bin/cot` 的内容与 mtime 不变；GUI 那部分照常装 / 覆盖；加 `--force` 才重铺工具链（`internal/install/toolchain_test.go` 三条用例，真机四场景见 DESIGN §3）。
 - **A6** 原子性：把 zip 里的 cot 换成不可执行的坏文件后跑 install.sh：退出码非 0；`~/cot/bin/ad`、`~/Applications/AI Desk.app`、rc 里的 `# >>> gpm >>>` 块、账本里的该包**都不存在**。
 - **A7** 许可降级：对 PATH 集成回答"拒绝"：安装成功；rc 文件字节不变；`gpm list` 有该包；安装输出里给出了手动 `export PATH=…` 的办法（`gpm env` 也能打印同一行）。
 - **A8** 卸载：`gpm uninstall ai-desk` 后 `<根>/AI Desk.app`（v3.5 装的老包则是 `<根>/lib/ai-desk_*`）、`<根>/bin/ad`、`~/Applications/AI Desk.app`、rc 块全部消失/还原；`~/cot/bin/cot`、`env-cot*`、`lib/` 下 cot 的包仍在；`command -v ad` 找不到。
@@ -114,3 +117,7 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **A14** 清理旧 `~/ad` 后：三份 rc 里不再有 `$HOME/ad/bin` 的 gpm 块，`~/ad` 目录被删除，`~/ad/state.json` 不存在；若已在 `~/cot` 下重装，`command -v ad` 仍能通过新启动器找到。
   - 本机已于 2026-10-09 执行完毕：`~/ad/bin/gpm uninstall ai-desk`（旧 v34 回放）→ `rm -rf ~/ad`。实测输出为 6 条删除 + 3 条"已摘除 PATH 标记块"，`~/Applications/AI Desk.app` 软链一并消失；三份 rc 里 gpm 行数归 0，`~/.zshrc:141` 摘块留下的 3 个连续空行已收敛为 1；`alias c` 与 token 导出未受影响。
 - **A17** 入口落点与三道闸（v3.6）：装完 `<根>/AI Desk.app` 存在且 `<根>/lib` 下没有 `ai-desk_*`；`payload/` 根下多放一个文件 → 安装报错且不留痕；家里先手工放一个非 gpm 的 `~/cot/ad` → 报错、`--force` 才覆盖；`entry` 名字取 `bin` / `lib` / `staging` / 账本名（`cot-state.json`，以及还没迁移的旧名 `state.json`）→ 即使 `--force` 也拒（`internal/install/layout_test.go` 四条用例）。
+- **A19** 工具链已装好但 rc 没改（v3.8）：手工预放 `~/cot/bin/cot`、三份 rc 里都没有 gpm 块 → 装完打印"已经装好 …，跳过"，**而三份 rc 各补上一个 `# >>> gpm >>>` 块**，`command -v ad` 能找到（真机 C 场景，DESIGN §3）。
+- **A20** `--force` 重铺工具链（v3.8）：同样预置后再装并加 `--force` → 包里那份假 cot 被调用（标记文件出现）。
+- **A21** 回滚范围（v3.8）：让工具链成功、后面的 GUI 步骤失败（家里预放别人的同名入口）→ 整次安装非 0 退出、账本里没有该包、没有启动器，但 `~/cot/bin/cot` 与别人放的东西都还在（`TestInstallKeepsToolchainWhenGuiPartFails`）。
+- **A22** 账本并发写（v3.8）：`gpm list` 读完账本之后、`gpm install` 写账本之前手工改一次账本 → 安装失败、提示"请重跑一次"，磁盘上账本仍是别人那份（`internal/ledger/ledger_test.go` 的 `TestSaveRefusesWhenLedgerChangedUnderneath` / `TestSaveRefusesWhenLedgerAppeared`）。

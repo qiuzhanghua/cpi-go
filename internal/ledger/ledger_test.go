@@ -125,3 +125,77 @@ func TestLoadRejectsBadJSON(t *testing.T) {
 		t.Errorf("报错没指向读到的那份文件：%v", err)
 	}
 }
+
+// 写回之前要比一次原文（v3.8）：这次操作期间别人动过账本，就不写。
+//
+// 两个 gpm 同时改一个家，最后写的那份会把先写的那份盖掉 —— 文件装上了却
+// 没记进账，之后 list 看不见、uninstall 也回放不掉。宁可这次失败。
+func TestSaveRefusesWhenLedgerChangedUnderneath(t *testing.T) {
+	_, path := newHome(t)
+	write(t, path, `{"schemaVersion":1,"packages":[{"id":"ai-desk"}]}`)
+
+	l, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 别人（另一个 gpm）在这个窗口里装了一个东西。
+	other := `{"schemaVersion":1,"packages":[{"id":"ai-desk"},{"id":"other-app"}]}`
+	write(t, path, other)
+
+	err = l.Save(path)
+	if err == nil {
+		t.Fatal("账本在脚下被改过，却还是写回去了")
+	}
+	if !strings.Contains(err.Error(), "重跑") {
+		t.Errorf("报错没告诉用户怎么办：%v", err)
+	}
+	// 别人的账目原封不动。
+	if b, err := os.ReadFile(path); err != nil || string(b) != other {
+		t.Errorf("把别人的账本覆盖了：%q %v", b, err)
+	}
+}
+
+// 账本本来是空的，这次操作期间被别人建了出来：同样不写。
+func TestSaveRefusesWhenLedgerAppeared(t *testing.T) {
+	_, path := newHome(t)
+
+	l, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Put(Package{ID: "ai-desk"})
+	write(t, path, `{"schemaVersion":1,"packages":[{"id":"other-app"}]}`)
+
+	if err := l.Save(path); err == nil {
+		t.Fatal("账本被别人建出来了，却还是写回去了")
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "other-app") {
+		t.Errorf("把别人的账本覆盖了：%q", b)
+	}
+}
+
+// 同一个进程里连着写两次不该自己撞自己：第一次写下去的那份就是新底稿。
+func TestSaveTwiceInARow(t *testing.T) {
+	root, path := newHome(t)
+
+	l, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Put(Package{ID: "ai-desk"})
+	if err := l.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	l.Put(Package{ID: "other-app"})
+	if err := l.Save(path); err != nil {
+		t.Fatalf("第二次写回失败：%v", err)
+	}
+	again, err := Load(filepath.Join(root, filepath.Base(root)+"-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Packages) != 2 {
+		t.Errorf("两个包都该在账本里：%+v", again.Packages)
+	}
+}
