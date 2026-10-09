@@ -16,7 +16,6 @@
 package home
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -206,7 +205,8 @@ func RootFromSelf() (string, bool) {
 // Bin 是启动器与 gpm 自拷贝所在目录。
 func (h *Home) Bin() string { return filepath.Join(h.Root, "bin") }
 
-// Lib 是各版本包目录的父目录。
+// Lib 是命令行插件目录的父目录（cot 把自己装的插件放这儿）。v3.6 起
+// gpm 不再往 lib/ 里放东西。
 func (h *Home) Lib() string { return filepath.Join(h.Root, "lib") }
 
 // Staging 是解包中转目录。
@@ -221,9 +221,13 @@ func (h *Home) LedgerPath() string { return filepath.Join(h.Root, "state.json") 
 // Platform 是包目录名里的平台段，如 darwin_arm64。
 func (h *Home) Platform() string { return h.GOOS + "_" + h.GOARCH }
 
-// PackageDir 返回某个包在 lib/ 下的落点。
-func (h *Home) PackageDir(id, version string) string {
-	return filepath.Join(h.Lib(), fmt.Sprintf("%s_%s_%s", id, version, h.Platform()))
+// AppDir 返回入口在家的落点：v3.6 起 GUI 的实体直接放在家目录下，
+// 跟 bin/、lib/、state.json 平级 —— lib/<id>_<版本>_<平台>/ 那套是
+// 命令行插件的位置，GUI 程序不放那儿。
+//
+// top 是入口在 payload/ 根下的顶层名字（"AI Desk.app"、"ai-desk.exe"）。
+func (h *Home) AppDir(top string) string {
+	return filepath.Join(h.Root, filepath.FromSlash(top))
 }
 
 // Ensure 建立家目录骨架。

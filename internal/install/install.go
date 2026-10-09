@@ -138,7 +138,17 @@ func Install(src string, opt Options) error {
 		}
 	}
 
-	pkgDir := h.PackageDir(m.ID, m.Version)
+	// v3.6：GUI 的实体直接落在家目录下（跟 bin/、lib/、state.json 平级）。
+	// lib/<id>_<版本>_<平台>/ 那套是命令行插件的位置，GUI 程序不放那儿。
+	top, err := payloadTop(payloadRoot, entry)
+	if err != nil {
+		return err
+	}
+	pkgDir := h.AppDir(top)
+	if err := checkAppDir(h, pkgDir, opt.Force); err != nil {
+		return err
+	}
+
 	var rollback []func()
 	fail := func(err error) error {
 		for i := len(rollback) - 1; i >= 0; i-- {
@@ -146,15 +156,16 @@ func Install(src string, opt Options) error {
 		}
 		return err
 	}
+	// payload 根下就入口那一个条目，所以收回来的正好是它。
 	rollback = append(rollback, func() { os.RemoveAll(pkgDir) })
 
 	if err := os.RemoveAll(pkgDir); err != nil {
 		return err
 	}
-	if err := stage.CopyTree(payloadRoot, pkgDir); err != nil {
+	if err := stage.CopyTree(payloadRoot, h.Root); err != nil {
 		return fail(err)
 	}
-	entryAbs := filepath.Join(pkgDir, filepath.FromSlash(entry.Rel()))
+	entryAbs := filepath.Join(h.Root, filepath.FromSlash(entry.Rel()))
 	if entry.Kind() == "exe" {
 		if err := os.Chmod(entryAbs, 0o755); err != nil {
 			return fail(err)
@@ -327,6 +338,53 @@ func installToolchains(unpack string, tcs []integrate.Toolchain, out io.Writer) 
 		}
 	}
 	return nil
+}
+
+// payloadTop 校验 payload/ 根下只有入口那一个条目，并返回它的顶层名字。
+//
+// v3.6 起应用的落点是 <家>/<顶层名>，账本里记的 Dir 也只有一个，
+// 所以载荷必须"一个包 = 一个入口"，要带陪衬文件就跟入口一起装进一个目录。
+func payloadTop(payloadRoot string, entry manifest.Entry) (string, error) {
+	items, err := os.ReadDir(payloadRoot)
+	if err != nil {
+		return "", err
+	}
+	top := strings.Split(filepath.ToSlash(entry.Rel()), "/")[0]
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		names = append(names, it.Name())
+	}
+	if len(items) != 1 || items[0].Name() != top {
+		return "", fmt.Errorf("payload/ 根下只放入口那一个东西：清单说入口是 %q，payload/ 里却有 [%s]。要带别的文件，就跟入口一起装进一个目录",
+			entry.Rel(), strings.Join(names, ", "))
+	}
+	return top, nil
+}
+
+// checkAppDir 挡住往家里已经有的东西上摊：v3.6 起应用实体就住在
+// 家目录下，那里同时住着 gpm / 工具链自己的骨架。
+func checkAppDir(h *home.Home, dest string, force bool) error {
+	for _, own := range []string{h.Bin(), h.Lib(), h.Staging(), h.LedgerPath(), h.Log()} {
+		if samePath(dest, own, h.GOOS) {
+			return fmt.Errorf("入口不能叫 %q —— 那是这个家自己的东西，换个名字重打包", filepath.Base(dest))
+		}
+	}
+	if _, err := os.Lstat(dest); err == nil {
+		if !force {
+			return fmt.Errorf("%s 已经存在，而且不是 gpm 装的：不动别人的东西（确实要覆盖，加 --force）", dest)
+		}
+	}
+	return nil
+}
+
+// samePath 比两个路径是不是同一个东西。macOS 与 Windows 的文件系统默认
+// 不区分大小写，Bin/ 和 bin/ 在那儿是同一个目录。
+func samePath(a, b, goos string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if goos == "windows" || goos == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // checkLauncherName 在写启动器之前挡住重名（FR-21）。

@@ -1,4 +1,4 @@
-# gpm — GUI Package Manager 设计文档（v3.5）
+# gpm — GUI Package Manager 设计文档（v3.6）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -8,6 +8,8 @@ v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**一次装
 **v3.3 改的是名字与"装到哪儿"**：产品从 `cpi` 改名 **gpm（GUI Package Manager）**；`~/ad` 这个硬编码的安装根被删掉——**装到哪儿是打包方/安装器的决定**（`gpm pack --default-dir` 把它烘进 `install.sh`/`install.cmd`，AI Desk 用的是 `~/ad`），gpm 自己只认 `--dir` > `$GPM_HOME` > 当前目录。顺带补掉一处真实风险：`<bin>/gpm` 已经存在时不再覆盖（原来拿旧包安装会把新版 gpm 悄悄降级）。名字的由来、以及"为什么叫 manager 不算撒谎"见 §0.5。
 
 **v3.4 补的是 v3.3 留下的那个洞（O11）**：删掉 `~/ad` 之后，用户在新终端里敲 `gpm list` 会落到**当前目录**——因为 `GPM_HOME` 只活在 `install.sh` 那一行里，shell 里并没有它。按用户给的布局原则（**带 GUI 的应用放在指定的目录下；没有图形界面的小东西放在它下面的 `bin/`；gpm 自己也一样**），`<家目录>/bin/gpm` 这个位置本身就把家目录说出来了，于是优先级在 `$GPM_HOME` 与"当前目录"之间补了一档 `RootFromSelf()`：**从 gpm 自己在哪儿推断**。不需要新状态、也不需要 shell 帮忙记（见 D21、§2.3、§0.3.4）。
+
+**v3.6 把 GUI 应用从 `lib/` 底下搬到家的顶层。** 入口（macOS 的 `.app`、Windows / Linux 的可执行文件）从此直接落在家目录下——`<家>/AI Desk.app`、`<家>/ai-desk.exe`——与 `bin/`、`lib/`、`staging/`、`state.json` 平级；`lib/<id>_<版本>_<平台>/` 那套命名留给**命令行插件**（cot 自己装的插件正在用），gpm 不再往里写。配套三道上锁：`payload/` 根下只许有入口一个条目、入口名不许撞家骨架、家里已有别人的同名东西就拒绝。理由与升级路径见 §0.3.6、D35。
 
 **v3.5 把"装完能用"从 GUI 应用扩到工具链，并把安装根还给工具链自己的家。** 设计对象是随这一版定下的需求文档 [`REQUIREMENTS.md`](REQUIREMENTS.md)（那边记用户原话，本文记理由）：一个包可以在清单里声明 `requires: [cot]` / `[tdp]`，install.sh 就拿 zip 里自带的那份可执行文件跑 `cot i -s <家>`（离线、只装 cot 自身与 activate 框架，不装插件，见 C3/C4）；装完工具链的家（`$COT_HOME` / `$TDP_HOME`）与 GUI 应用的家**合并成同一个目录**——于是 gpm 自造的 `GPM_HOME` 退场，`~/ad` 也不再有任何特殊地位（本机已按旧账本回放清理，见 §3）。同时补上两件拖了很久的事：**终端启动器必须把工具链环境注入给 GUI 应用**（macOS 的 `open` 不给环境，实测见 §2.8 / C1，v1 因此改成直接 exec `Contents/MacOS/<binary>`），**启动器重名检查**从"已知缺口"提为需求（R4 → FR-21）。
 
@@ -25,22 +27,23 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 
 | # | 决策 | 出处 |
 |---|---|---|
-| **D19** | **范围 = GUI 应用的安装器 + 工具链自举的编排**。一次安装一个 `id`，但**账本是多包的**：同一个家里可以并排装好几个应用，各占自己的 `lib/<id>_…` 与 `bin/<cmd>`（见 A3）。不做多应用清单、不做计划算法、不做镜像表/版本源/断点续传/离线 store，**也不抓取、不升级**（那是 `apt` 的活，见 §0.5）。**图形安装器暂缓**（原 D13 的 Wails 四屏不在首版范围）。 | 本项目 + v3.5 |
+| **D19** | **范围 = GUI 应用的安装器 + 工具链自举的编排**。一次安装一个 `id`，但**账本是多包的**：同一个家里可以并排装好几个应用，各占自己的家目录顶层入口（v3.6：`<家>/<payload 顶层名>`）与 `bin/<cmd>`（见 A3、D35）。不做多应用清单、不做计划算法、不做镜像表/版本源/断点续传/离线 store，**也不抓取、不升级**（那是 `apt` 的活，见 §0.5）。**图形安装器暂缓**（原 D13 的 Wails 四屏不在首版范围）。 | 本项目 + v3.6 |
 | **D20** | **分发形态 = zip 自带 gpm**。产物是一个 `<id>-<version>-<os>-<arch>.zip`，内含 `install.sh`（mac/Linux）/ `install.cmd`（Windows）+ `gpm` + `<简称>-manifest.yaml` + `payload/` + `SHA256SUMS`；声明了 `requires` 时还有 `tools/<os>_<arch>/{cot,tdp}`（D32）。用户解压后运行其中一个，脚本只做三行 bootstrap。 | 本项目（v3.5 改清单名） |
-| **D21** | **安装根由安装器决定**：优先级 `--dir` > **按 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`RootFromSelf()`，v3.4）> **平台数据目录/<简称>**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> **当前目录**。打包方用 `gpm pack --default-dir "~/cot"` 把默认值烘进 `install.sh`/`install.cmd`。**v3.5 起没有 `GPM_HOME`**：家就是工具链自己的家，GUI 应用落在它的 `lib/` 下，`bin/` 里住 cot / tdp / gpm / 各个 `<简称>`——一个家、一条 PATH。 | 本项目；v3.5 按用户裁决改根（§0.3.5） |
+| **D21** | **安装根由安装器决定**：优先级 `--dir` > **按 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`RootFromSelf()`，v3.4）> **平台数据目录/<简称>**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> **当前目录**。打包方用 `gpm pack --default-dir "~/cot"` 把默认值烘进 `install.sh`/`install.cmd`。**v3.5 起没有 `GPM_HOME`**：家就是工具链自己的家；**v3.6 起 GUI 应用落在家的顶层**（`<家>/<Name>.app`、`<家>/<exe>`，不再进 `lib/`），`bin/` 里住 cot / tdp / gpm / 各个 `<简称>`，`lib/` 留给命令行插件的命名——一个家、一条 PATH。 | 本项目；v3.5 改根、v3.6 改入口落点（§0.3.5、§0.3.6） |
 | **D22** | **输入契约**：一个目录或一个 zip，里面有 `<简称>-manifest.yaml` + `payload/` + `SHA256SUMS`（`requires` 非空时还有 `tools/<os>_<arch>/`）。清单文件名由简称决定；给一个目录时 `gpm install` 认唯一的 `*-manifest.yaml`，多于一个就报错。 | 本项目；v3.5 改文件名并加 `requires` |
 | **D23** | **校验**：`SHA256SUMS` 必须覆盖 `payload/` 下每一个常规文件；对不上即拒绝安装。**缺失 `SHA256SUMS` 时警告后继续**，并把本次安装记为 `unverified`（`gpm list` 会显示）。`--skip-verify` 只用于调试。 | 沿用 A2 |
-| **D24** | **macOS 应用必须以 `.app` 形态落地**：上游给了就用（`entry.darwin.bundle`）；上游只发裸可执行文件时由 gpm 合成最小外壳。 | 沿用 D18。**合成外壳这一半本版尚未实现**，见 §2.7、§2.13 |
+| **D24** | **macOS 应用必须以 `.app` 形态落地**：上游给了就用（`entry.darwin.bundle`）；上游只发裸可执行文件时由 gpm 合成最小外壳。**v3.6 起这个 `.app` 直接落在家目录顶层**（`<家>/<Name>.app`），不再套 `lib/<id>_<版本>_<平台>/`（D35）。 | 沿用 D18。**合成外壳这一半本版尚未实现**，见 §2.7、§2.13 |
 | **D25** | **终端启动器**：每个应用在 `<家>/bin/<cmd>` 生成一个启动器，参数透传；`mode: activate`（默认）或 `direct`（要 stdout / 退出码）。**v3.5 起 macOS 上要注入工具链环境时（`requires` 非空）直接 exec 内层可执行文件**，没有环境要注入时不改道（`activate` 仍走 `open`，D33）；名字撞车必须报错、不覆盖（FR-21）。 | 沿用 D15–D17；v3.5 改 macOS 实现 |
 | **D26** | **PATH 集成**：把家下面的 `bin/` 接进 PATH——`cot`、`tdp`、`gpm` 与各个 `<简称>` 都住在那里，所以一个块一条就够。按 `$SHELL` 决定落点，写幂等标记块，**写之前必须用人话请求许可**，拒绝则功能降级而非失败。 | 沿用 D7；v3.5 明确"工具链也走同一个块" |
 | **D27** | **gpm 不吃 `.dmg` / NSIS `.exe` / AppImage 安装器**，只吃已经摆成 `payload/` 形状的归档。理由见 §2.12。 | 本项目 |
 | **D28** | **账本 `state.json` 是所有外部副作用（PATH 块、`~/Applications` 链接、`.desktop`）的唯一真相**，卸载即回放删除。**边界见 D34**：只回放 gpm 自己写下的东西，工具链的资产不记账也不删。 | 沿用 D8 + v3.5 |
 | **D29** | **gpm 把自己也装进 `<家>/bin/gpm`**，保证装完之后 `gpm list` / `gpm uninstall` 还找得到它；卸载时一并删掉（仅当账本里已经没有别的包，**且环境里没有 `COT_HOME` / `TDP_HOME`**——有值说明这个 shell 正站在工具链的家里，那份 gpm 留着，见 §2.9）。**那儿已经有一个 gpm 就不装、不覆盖**（那属于用户，不记进账本、卸载时也不删它）——否则拿旧包安装会把新版 gpm 静默降级。 | 本项目 |
-| **D30** | **单版本覆盖式**：同一个 `id` 再装一次，先删旧的包目录与启动器再装新的，不做多版本共存。 | 沿用 D10 |
+| **D30** | **单版本覆盖式**：同一个 `id` 再装一次，先删账本记下的旧入口与启动器再装新的，不做多版本共存。**删的是账本里那个 `dir`**，不是按新包拼出来的路径——所以 v3.5 装在 `lib/…` 里的老包会被干净换掉（§0.3.6）。 | 沿用 D10；v3.6 明确"删账本那个 dir" |
 | **D31** | **动手之前先查那个应用在不在跑**：覆盖安装与卸载都在删东西之前 `proc.Find` 一次；在跑就用人话说明后果并**拒绝**，只有显式给 `--force` 才继续。查不出来（平台不支持 / 没权限）**不拦**，只打印一行提示。 | 本项目。见 §2.9、§3 |
 | **D32** | **工具链自举由安装器编排，zip 自带、完全离线**：清单声明 `requires: [cot]`（或 `tdp`）时，install.sh 先跑 zip 里的 `tools/<os>_<arch>/cot`：`cot i -s "${COT_HOME:-$HOME/cot}"`（tdp 按 `$TDP_HOME`）。gpm 不下载、不查版本、不代装插件；那一步失败就**不继续**（FR-20）。 | v3.5，本项目 |
 | **D33** | **启动器要把工具链环境注入给 GUI 应用**：`<家>/bin/<cmd>` 启动前 export 本场景的家变量（cot 场景 `COT_HOME`、tdp 场景 `TDP_HOME`）、把 `<家>/bin` 前置到 PATH，并在 `<家>/bin/env-cot.vars` 存在时 source 它。**macOS 上只要这个包声明了 `requires` 就直接 exec `Contents/MacOS/<binary>`**——`open` 不给环境（C1）；没有 `requires` 时不改道（`activate` 仍旧 `open`，双击语义不丢）。改道之后的代价是丢掉 LaunchServices 语义；Finder / 启动台双击的实例拿不到注入（A7、R13）。 | v3.5，本项目 |
-| **D34** | **归属边界**：账本只记 gpm 写下的东西（自己的 `lib/<id>_…`、`bin/<cmd>`、图形入口、rc 标记块）。工具链自己的资产（`bin/cot`、`bin/tdp`、`env-cot*`、`activate*`、`lib/` 下的插件）**不进账本、`uninstall` 一律不碰**，那个家目录本身也不删。 | v3.5，本项目。见 §2.9 |
+| **D34** | **归属边界**：账本只记 gpm 写下的东西（自己的入口——v3.6 起是 `<家>/<payload 顶层名>`，v3.5 是 `lib/<id>_…`——、`bin/<cmd>`、图形入口、rc 标记块）。工具链自己的资产（`bin/cot`、`bin/tdp`、`env-cot*`、`activate*`、`lib/` 下的插件）**不进账本、`uninstall` 一律不碰**，那个家目录本身也不删。 | v3.5，本项目。见 §2.9 |
+| **D35** | **入口落在家目录顶层**：`payload/` 根下**只能有入口那一个条目**，它整份落到 `<家>/<那个名字>`（macOS `<家>/AI Desk.app`，Windows / Linux `<家>/ai-desk.exe` / `<家>/ai-desk`），与 `bin/`、`lib/`、`staging/`、`state.json` 平级。`lib/<id>_<版本>_<平台>/` 是**命令行插件**的命名（cot 在用），gpm 不再往里写。三道闸：payload 根下有第二个条目 → 拒；入口名撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）→ 拒，`--force` 也不放行；家里已有别人的同名东西 → 拒，`--force` 才放行。 | v3.6，本项目。用户裁决："AI Desk 落 `<家>`，不要落 `<家>/lib/ai-desk_0.2.0_darwin_arm64`——GUI 程序不放到命令行程序中类似的位置" |
 
 ### 0.2 由上述决策推导出的硬性设计约束
 
@@ -117,6 +120,17 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 
 **未定**：工具链"已装好"怎么判、失败回滚到哪一步、账本与 cot 共处一室的加锁——三条还在 [`REQUIREMENTS.md`](REQUIREMENTS.md) §7，本文以 O14–O16 跟踪。**已定**（用户裁决）：`requires` 为空时用简称、缺省装到平台数据目录（D21，O12 关闭）；`ac` 只是举例、不单独裁决，重名一律按 FR-21 拒绝（O13 关闭）。
 
+### 0.3.6 v3.5 → v3.6 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| 入口落点：`<家>/lib/<id>_<版本>_<平台>/<Name>.app` → **`<家>/<payload 根下的顶层名>`**（`<家>/AI Desk.app`、`<家>/ai-desk.exe`） | 见 D35、§2.3。用户裁决："AI Desk 落 `<家>`，不要落 `<家>/lib/ai-desk_0.2.0_darwin_arm64`——GUI 程序不放到命令行程序中类似的位置"。`lib/<id>_<版本>_<平台>/` 是**命令行插件**的命名（本机 `~/cot/lib` 里的目录都是这个形状，cot 自己写），GUI 应用挤进去只会让"谁在管这一支"变模糊 |
+| `payload/` 根下**只允许一个条目** | 账本的 `dir` 只有一个，多出来的东西没有回放依据——与其装完留下"卸载不掉的一小块"，不如在动手之前就报错 |
+| 入口名不许撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`） | 入口现在跟它们平级，装一个叫 `bin` 的应用会把家的骨架顶掉。这条即使 `--force` 也不放行 |
+| 家里已有别人的同名东西 → 拒绝（`--force` 放行） | 顶层比 `lib/` 底下的 gpm 专属命名更容易撞上用户自己放的东西（一个叫 `demo` 的脚本、一份说明）。默认不覆盖，与 R7 同一个口径 |
+| 进程探测的正则收尾：`^(<包目录>/)` → `^(<包目录>([ /]\|$))` | 见 §2.9.1。`argv[0]` 现在可以**就是**入口本身（裸可执行文件），末尾那个边界不能省；不然 `/a/demo` 会连累 `/a/demo-extra` |
+| 升级路径：v3.5 装的包被 v3.6 的包覆盖时，账本里那条 `dir`（旧的 `lib/<id>_…`）会被按 D30 先删掉，再落新入口 | 覆盖式安装删的是**账本记的那个目录**，不是拼出来的新路径——所以老包的遗留不会被留下 |
+
 ### 0.4 待确认假设
 
 | # | 假设 | 影响 |
@@ -124,7 +138,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | A1 | **~~Windows 侧的 PATH 集成与开始菜单 `.lnk` 尚未实现~~** —— v3.1 已实现并在真 Windows runner 上验证（§2.6、§2.7、§2.13） | 已消解 |
 | A5 | **gpm 在 Windows 的 PATH 上只摘除自己加的那一条**，其余（含结尾的空条目）逐字节保持原样 | 这条现在有 `TestWindowsPathRoundTripIsExact` 与真注册表往返测试守着（§2.6） |
 | A2 | 没有 `SHA256SUMS` 时只警告不拒绝 | 供应链可信度换可用性；如需更严，可要求清单里给 `sha256` 并强制比对 |
-| A3 | **一次装一个 `id`，但账本是多包的**：同一个 `<家>` 下可以并排装多个不同 `id` 的应用，各占自己的 `lib/<id>_<version>_<os>_<arch>` 与 `bin/<cmd>`；同一个 `id` 仍然是单版本覆盖式（D30）。 | 代码本来就是这么写的：`ledger.Packages` 是列表，`Put`/`Find`/`Remove` 都按 id 走，删 `bin/gpm` 的条件是"账本空了"——文档过去写着"一次只装一个"，是文档偏离了代码，v3.3 把口径改成代码的样子 |
+| A3 | **一次装一个 `id`，但账本是多包的**：同一个 `<家>` 下可以并排装多个不同 `id` 的应用，各占自己的家目录顶层入口（v3.6：`<家>/<payload 顶层名>`）与 `bin/<cmd>`；同一个 `id` 仍然是单版本覆盖式（D30）。 | 代码本来就是这么写的：`ledger.Packages` 是列表，`Put`/`Find`/`Remove` 都按 id 走，删 `bin/gpm` 的条件是"账本空了"——文档过去写着"一次只装一个"，是文档偏离了代码，v3.3 把口径改成代码的样子 |
 | A4 | 图标暂不处理 | 合成 `.app` 外壳时没有 `Resources/`、`.desktop` 里没有 `Icon=`；上游给了 `.icns`/`.ico` 时才补 |
 | A6 | 干净机器上工具链的 `lib/` 是空的：gpm 只把 `cot` 自己（+ activate 框架）放好，插件由用户自己 `cot install` | 见 §1.5、D32。用户裁决"`~/cot/lib` 让它空着，不用多安装其他插件"——所以 zip 只大 4 MB（cot）/ 7 MB（tdp），也不背"哪些插件该有"这个判断 |
 | A7 | macOS v1 只保证**命令行启动器**这条路径注入环境；Finder / 启动台双击启动的实例拿不到 | 见 D33、§2.8。要两全得等合成 `.app` 外壳（R8）；这是 v1 明说的缺口，不是遗漏 |
@@ -177,7 +191,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-2 | 从 `<简称>-manifest.yaml` 里读出 `id` / `name` / `version` / `entry` / `launch`，并校验 |
 | FR-3 | 按当前 `GOOS`/`GOARCH` 选择入口；清单没有当前平台的入口时明确报错 |
 | FR-4 | 用 `SHA256SUMS` 校验 `payload/` 下每个文件；不一致拒绝安装 |
-| FR-5 | 把 `payload/` 整体落到 `<家>/lib/<id>_<version>_<os>_<arch>/` |
+| FR-5 | 把 `payload/` 里那**一个**入口整体落到 `<家>/<它的顶层名>`（v3.6、D35；根下多一个条目即报错） |
 | FR-6 | 在 `<家>/bin/<cmd>` 生成终端启动器（`0755`），参数逐个透传 |
 | FR-7 | 建立图形入口：macOS `~/Applications/<Name>.app`、Linux `~/.local/share/applications/<id>.desktop` |
 | FR-8 | 把 `<家>/bin` 挂到 PATH 上；写之前请求许可，写入幂等、可撤销 |
@@ -195,6 +209,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-20 | 工具链步骤失败就**不继续**：整体非 0 退出，并按 rollback 栈撤销本次已做的一切（不写 rc 块、不建启动器、不建软链、不记账本） |
 | FR-21 | 生成 `<家>/bin/<cmd>` 之前必须检查该名字是否已被非 gpm 的文件占用，占用则报错、不覆盖（补 R4） |
 | FR-22 | macOS 的终端启动器必须把工具链环境注入给应用进程（至少 `COT_HOME` 与 `PATH`），不再走 `open`（D33） |
+| FR-23 | 入口落点要与家的骨架、与家里已有的别人的东西都不冲突：`payload/` 根下只能有入口一个条目；入口名撞 `bin` / `lib` / `staging` / `state.json` / `log` 时即使 `--force` 也拒；家里已有非 gpm 的同名东西时报错、`--force` 才放行（D35） |
 
 ### 1.4 非功能需求
 
@@ -257,7 +272,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
                        │  → ledger                 │
                        └────────────┬─────────────┘
                                     │
-                    <家>/{bin,lib,staging,state.json}   （家 = $COT_HOME，默认 ~/cot）
+                    <家>/{<Name>.app,bin,lib,staging,state.json}   （家 = $COT_HOME，默认 ~/cot）
                     ~/Applications/AI Desk.app
                     ~/.zprofile / .zshrc / .profile
 ```
@@ -281,7 +296,7 @@ internal/pack/      反向：把装配目录打成可分发的 zip（install.sh/
 internal/integrate/ 外部副作用：终端启动器、图形入口、PATH
 internal/ledger/    state.json 的读写
 internal/proc/      查某个包目录底下有没有活着的进程（§2.9.1）
-internal/install/   编排 + 回滚 + 卸载回放 + 工具链自举（§2.5.1）
+internal/install/   编排 + 回滚 + 卸载回放 + 工具链自举（§2.5.1）+ 入口落点校验（D35）
 tools/fixture/      造测试分发包的脚本（不属于产品；产品路径已由 gpm pack 取代）
 ```
 
@@ -300,15 +315,16 @@ tools/fixture/      造测试分发包的脚本（不属于产品；产品路径
 │   ├── cot / tdp               工具链自举的产物（D32；gpm 不记账、卸载不碰，D34）
 │   ├── activate* / env-cot*    cot 的 activate 框架，同上
 │   └── <cmd>                   终端启动器（D25）
-├── lib/                        带 GUI 的应用 + 工具链自己的插件
-│   ├── <id>_<version>_<os>_<arch>/
-│   │   └── <Name>.app          仅 macOS：上游给的或 gpm 合成的（账本管这一支）
+├── <Name>.app / <Name>[.exe]   GUI 应用的入口本体，直接住家目录顶层（v3.6、D35）
+│                               名字 = payload/ 根下那个名字；账本 dir 指这儿
+├── lib/                        命令行插件的命名空间（v3.6 起 gpm 不再往里写）
 │   └── go_1.27.1_darwin_arm64/ …       cot 装的插件（账本不管，v3.5）
 ├── staging/                    解包中转；每次安装一个 unpack-<纳秒> 目录，defer 删除
 └── state.json                  账本
 ```
 
-- **`bin/` 与 `lib/` 的分界是"有没有图形界面"，不是"是不是可执行文件"**：带 GUI 的应用住在 `lib/<id>_<version>_<os>_<arch>/` 里（用户指定的目录之下），没有图形界面的小东西——终端启动器与 gpm 自己——住在 `bin/` 下。这条分界不只是整洁，它还是 **`RootFromSelf()` 的依据**（见下）。
+- **`bin/`、家目录顶层与 `lib/` 的分界是"有没有图形界面"，不是"是不是可执行文件"**（v3.6）：带 GUI 的应用本体住在**家目录顶层**（`<家>/<Name>.app`、`<家>/<exe>`），没有图形界面的小东西——终端启动器与 gpm 自己——住在 `bin/` 下，而 `lib/<id>_<版本>_<平台>/` 这套命名只留给**命令行插件**（cot 正在用）。用户的话是"GUI 程序不放到命令行程序中类似的位置"。这条分界不只是整洁，`<家>/bin/gpm` 那个位置还是 **`RootFromSelf()` 的依据**（见下）。
+- **入口的落点是"payload 根下那个名字"，不是 gpm 拼出来的名字**（v3.6、D35）：`payload/AI Desk.app` → `<家>/AI Desk.app`，`payload/ai-desk.exe` → `<家>/ai-desk.exe`。账本的 `dir` 记的就是这个落点，`entry` 也指到它底下；这也是为什么 `payload/` 根下只能有那一个条目——多出来的东西没有回放依据（`payloadTop()` 在动手之前就拦）。入口名撞家骨架、或撞上家里已有的别人的东西，由 `checkAppDir()` 在同一处拦下。
 - **`RootFromSelf()`：gpm 从"自己在哪儿"反推家目录**（v3.4）。`install.sh` 只在安装那一次把 `--dir` 传进来；之后用户在新终端里敲 `gpm list` 时 `$COT_HOME` 并不在环境里（工具链没被激活过），于是落到"当前目录"——`gpm list` 会报"这里还没装东西"（O11，真机实测过）。可既然布局把 gpm 自己固定放在 `<家>/bin/gpm`，**这个位置本身就在说家目录是它的上一级**。判据三条，缺一不可：① 可执行文件所在目录正好叫 `bin`；② 文件名正好是 `gpm`（Windows 上 `gpm.exe`）；③ 上一级里有账本 `state.json`。第三条是专门用来挡住 `/usr/local/bin/gpm` 这类"恰好也叫 bin、但上一级不是 gpm 的家"的位置的。
 - **`requires` 为空时才有"gpm 自己挑一个家"这回事**（v3.5，用户裁决）：没有工具链的家可依附，就落到**平台数据目录 + 简称**——macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`。这个目录是 gpm 自己建的，所以只有"第一次装、且装失败"时才把它收回去（`home.DropIfEmpty()`，把建出来的空骨架逐个删掉）；装成功之后它就和别的家一样——卸载只按账本回放，不删整个目录。
 - **这不违反 D21。** D21 里"不发明默认值"说的是**有工具链的家可依附时**（`$COT_HOME` / `$TDP_HOME`，缺省 `~/cot` / `~/tdp`）gpm 不另造一个 `GPM_HOME`；从自己的位置推断也不是发明，是**看出来**：它不引入任何新状态（不像把根另存一个文件），也不要求 shell 帮忙记着（不像往 PATH 标记块里塞 `export COT_HOME`）。真正决定装到哪儿的仍然是安装器，推断只在"用户装完之后随手敲 gpm"这个场景里替他把根找回来。
@@ -336,12 +352,13 @@ launch:
   mode: activate       # activate（默认）| direct
 ```
 
-三条规则：
+清单规则：
 
 1. `entry.<goos>` 必须**恰好**给出 `bundle:` 或 `exe:` 之一，两者同时写或都不写都是错误。
-2. 路径**相对 `payload/`**，同时也就相对安装后的包目录；禁绝对路径、盘符、`~`、`..`。
+2. 路径**相对 `payload/`**；安装后它就在家目录顶层，账本里的 `dir` 就是 `<家>/<入口顶层名>`（v3.6）。禁绝对路径、盘符、`~`、`..`。
 3. `launch.cmd` 缺省等于**简称**（清单文件名里那一段）；两者不一致就报错，安装前就拦住。
 4. `requires` 缺省空 = 不装工具链、也不改 PATH；声明了就从 zip 的 `tools/<os>_<arch>/` 取对应可执行文件（缺了是**打包错误**，不是运行时静默跳过）。
+5. `payload/` 根下**只能有入口那一个条目**（v3.6、D35）：多余条目报错；入口名撞 `bin` / `lib` / `staging` / `state.json` / `log` 也报错，且 `--force` 不放行。
 
 **只校验当前平台**：清单可以带好几个平台，gpm 只看自己跑在哪个上；当前平台没有对应条目就报错退出。
 
@@ -361,7 +378,9 @@ launch:
     └ 名字是 gpm 自己用的 / 属于别的包 / 是别人放的文件 → 拒绝，只有 --force 放行
 3.6 工具链自举（requires 非空时，§2.5.1）          ← install.installToolchains
     └ 失败 → 不继续：逆序回滚，连刚建出来的空家也收回去
-4. payload/ 整体拷进 lib/<id>_<ver>_<os>_<arch>/        ← stage.CopyTree（保留权限位与符号链接）
+4. 定入口落点 <家>/<payload 根下的顶层名>                ← payloadTop（根下多一个条目即报错）
+   └ 撞家骨架 / 家里已有别人的同名东西 → 拒绝（D35）      ← checkAppDir
+   拷进 <家>/<入口名>                                  ← stage.CopyTree（保留权限位与符号链接）
    ├ 同 id 已存在 → 先查那个应用在不在跑（D31）          ← proc.Find（纯字符串比对，绝不 stat）
    │  ├ 在跑且没给 --force → 说明后果后拒绝，就此打住（一个字都还没动）
    │  └ 放行后按卸载流程删旧的（D30）
@@ -375,7 +394,7 @@ launch:
 9. 写 state.json                                       ← ledger.Save
 ```
 
-每一步成功都把逆操作压进 rollback 栈；任一步失败就**逆序执行**已压入的动作，然后返回错误。第 4 步之后的失败会把整个 `lib/<id>_…/` 目录一起删掉。
+每一步成功都把逆操作压进 rollback 栈；任一步失败就**逆序执行**已压入的动作，然后返回错误。第 4 步之后的失败会把那个入口（`<家>/<入口名>`）一起删掉——v3.5 之前删的是 `lib/<id>_…/`，现在 `dir` 指哪儿就删哪儿。
 
 **回滚栈与"先登记后执行"的分工**：账本（第 9 步）是**卸载**的依据，rollback 栈是**本次安装失败**的依据。两者不可互相替代——账本写下去的时候，安装已经成功了。
 
@@ -443,7 +462,7 @@ export PATH
 
 | 平台 | 机制 | 落点 | 状态 |
 |---|---|---|---|
-| macOS | **符号链接**指向 `lib/…/<Name>.app` | `~/Applications/<Name>.app` | 已实测：`open` 能拉起、启动台会索引 |
+| macOS | **符号链接**指向 `<家>/<Name>.app`（v3.6） | `~/Applications/<Name>.app` | 已实测：`open` 能拉起、启动台会索引 |
 | Linux | `.desktop` 文件，`Exec=` 指向启动器 | `~/.local/share/applications/<id>.desktop`（**遵守 `$XDG_DATA_HOME`**） | 已实测（ubuntu runner；测试里调 `desktop-file-validate`） |
 | Windows | 开始菜单 `.lnk` | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\gpm\<Name>.lnk` | 已实测（windows runner；写入后读回来做往返比对） |
 
@@ -474,7 +493,7 @@ export PATH
 > 已验证可行，等着落成代码（§2.13、§5 R8）。
 
 ```
-<家>/lib/<id>_<ver>_darwin_<arch>/<Name>.app/Contents/
+<家>/<Name>.app/Contents/                # v3.6：不再套 lib/<id>_<ver>_…
     Info.plist        # gpm 生成
     MacOS/<exe>       # 指向上游裸可执行文件：硬链接（首选）或拷贝
     Resources/        # 可选，清单给了图标才建
@@ -491,9 +510,9 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 | 平台 | 落点 | 内容 |
 |---|---|---|
-| macOS | `<家>/bin/<cmd>`，`0755` | 有 `requires` 时先注入工具链环境（见下），再 `exec '<lib 绝对路径>/<X>.app/Contents/MacOS/<X>' "$@"`；没有 `requires` 要注入时 `activate` 照旧 `exec open '<…>.app' --args "$@"`（v3.5） |
-| Windows | `<家>/bin/<cmd>.cmd` | `@echo off` + 先 `set` 工具链变量与 PATH + `"<lib 绝对路径>\<X>.exe" %*`（CRLF 换行） |
-| Linux | `<家>/bin/<cmd>`，`0755` | 先注入工具链环境，再 `exec '<lib 绝对路径>/<X>.AppImage' "$@"` |
+| macOS | `<家>/bin/<cmd>`，`0755` | 有 `requires` 时先注入工具链环境（见下），再 `exec '<家>/<X>.app/Contents/MacOS/<X>' "$@"`（v3.6：`.app` 就在家里）；没有 `requires` 要注入时 `activate` 照旧 `exec open '<…>.app' --args "$@"`（v3.5） |
+| Windows | `<家>/bin/<cmd>.cmd` | `@echo off` + 先 `set` 工具链变量与 PATH + `"<家>\<X>.exe" %*`（CRLF 换行） |
+| Linux | `<家>/bin/<cmd>`，`0755` | 先注入工具链环境，再 `exec '<家>/<X>' "$@"`（`<X>` 就是 `entry.linux.exe`，AppImage 也走这条） |
 
 - **macOS 上"有工具链要注入"的包为什么不再用 `open`**（v3.5）：`open` 走 LaunchServices，**不给环境**（C1 实测：GUI 应用只有 15 项 launchd 基线，`open --env K=V` 四种写法全不生效）。要"终端里启动的应用看得见 `COT_HOME`"就只能直接 exec 内层可执行文件。代价是丢掉双击等价、单实例激活与 Dock 行为（R13）——要两全得等合成 `.app` 外壳（R8）。
 - **Finder / 启动台双击不注入**：那条路径不经过启动器，走的是 LaunchServices（A7、X7）。
@@ -513,7 +532,7 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 删 ~/Applications/<Name>.app 或 .desktop   ← 账本 links
 删开始菜单的 .lnk（Windows）                ← 账本 links
 删 bin/<cmd> 或 bin/<cmd>.cmd              ← 账本 launcher
-删 lib/<id>_<version>_<os>_<arch>/         ← 账本 dir
+删 <家>/<入口名>（v3.6；v3.5 是 lib/<id>_<ver>_<os>_<arch>/）  ← 账本 dir
 摘除 PATH 条目                             ← 账本 pathEdits
   ├ POSIX   → 逐文件摘掉标记块
   ├ Windows → 从 HKCU\Environment 的 Path 里只摘掉那一条（其余逐字节不动）
@@ -525,7 +544,7 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 **自装的那份 gpm 什么时候留着**：`COT_HOME` / `TDP_HOME` 只要有一个有值（用户在一个**激活过的 shell** 里敲的 `uninstall`），就说明这个家归 cot/tdp 管、`<家>/bin/gpm` 很可能正是他手上敲的那一个，于是**不删**，只打印一行说明；账本里的 `self` 字段也留着。想删就先 `unset` 再卸，或者直接 `rm`（`home.ActiveToolchainEnv()`）。
 
-**验收标准（可测）**：`gpm list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；`lib/` 下无同名目录；shell 配置文件里没有 gpm 标记块（Windows 上是注册表 PATH 里没有 `<家>\bin`）；如果那个文件是 gpm 创建出来的且已经空了，文件本身也不在；账本空了且环境里没有 `COT_HOME` / `TDP_HOME` 时 `<家>/bin/gpm` 也不在（有值时它留着，见上）。
+**验收标准（可测）**：`gpm list` 无该项；`command -v <cmd>` 找不到；`~/Applications` 下链接消失；家目录顶层无那个入口（v3.5 装的老包则是 `lib/` 下无同名目录）；shell 配置文件里没有 gpm 标记块（Windows 上是注册表 PATH 里没有 `<家>\bin`）；如果那个文件是 gpm 创建出来的且已经空了，文件本身也不在；账本空了且环境里没有 `COT_HOME` / `TDP_HOME` 时 `<家>/bin/gpm` 也不在（有值时它留着，见上）。
 
 `<家>` 目录**不删**——用户可能往里放了别的东西，删掉是越界。命令会明说"目录还在"。
 
@@ -547,7 +566,7 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 
 | 平台 | 手段 | 注意 |
 |---|---|---|
-| macOS | `pgrep -f '^(<pkg>/|<pkg2>/…)'`，即**锚定在行首的 argv[0]** | 用 `pgrep` 而不是 `ps`：`/bin/ps` 是 setuid root，在受限环境里 exec 会被直接拒（C8）。`pgrep` 退出码 1 表示"没找到"，**不是**故障。锚定 `^` 是刻意的：另一个进程的命令行里"提到"这个路径不算命中（实测过），而幽灵进程的 argv[0] 仍是原路径，照样认得出 |
+| macOS | `pgrep -f '^(<入口>([ /]\|<pkg2>/…))'`，即**锚定在行首的 argv[0]**；入口是目录（`.app`）时它后面跟分隔符，入口是裸可执行文件时后面跟空格或到头（v3.6） | 用 `pgrep` 而不是 `ps`：`/bin/ps` 是 setuid root，在受限环境里 exec 会被直接拒（C8）。`pgrep` 退出码 1 表示"没找到"，**不是**故障。锚定 `^` 是刻意的：另一个进程的命令行里"提到"这个路径不算命中（实测过），而幽灵进程的 argv[0] 仍是原路径，照样认得出 |
 | Linux | 读 `/proc/<pid>/exe`（readlink）与 `/proc/<pid>/cmdline` 的 argv[0] | 两个候选都要收：AppImage 自解压后 `exe` 指向 `/tmp/.mount_xxxx`，只有 argv[0] 认得原位置 |
 | Windows | Toolhelp32 快照 + `QueryFullProcessImageNameW` 取**完整路径** | 查完整路径而不是进程名（同名的 exe 可以有好几份）；与 §2.7 的 COM 决定同理，**不起 `tasklist`/`wmic` 子进程** |
 | 其它 | 直接返回"这个平台还不支持查进程" | 调用方打印提示后继续（FR-17） |
@@ -555,7 +574,7 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 **拦的时候说什么。** 不吓唬人、不甩术语，四句话说清"现在动它会怎样、你该做什么、不想听劝怎么办"：
 
 ```
-<名字> 正在运行（进程 1844，/Users/q/ad/lib/ai-desk_0.2.0_darwin_arm64/…），现在动它，它脚下的文件会被换掉或抽走。
+<名字> 正在运行（进程 1844，/Users/q/cot/AI Desk.app/Contents/MacOS/ai-desk），现在动它，它脚下的文件会被换掉或抽走。
 它自己不会马上退出，但之后读到的资源、动态库、拉起的子进程都可能是另一份（版本混用）；
 在 macOS 上还会留下一个幽灵进程：那个位置一直指着这个旧进程，你下次点图标只会把它唤到前台，拿不到新的。
 请先退出 <名字>，再重新运行一次 gpm install。
@@ -609,6 +628,7 @@ GUI 应用默认**不会**在 PATH 里留下任何东西，所以这一步只能
 | 上游裸二进制 → 合成 `.app` 外壳 | ❌ **未实现**（配方见 §2.7，需先给 `manifest.Entry` 加 `bin`） | — | — |
 | 工具链自举（`requires: [cot]`） | ✅ **已实现并实测**（v3.5，FR-18–FR-20；本机用假 cot 跑通 e2e，§3） | ✅ CI（`internal/install` 的假 cot 用例） | ✅ CI（同一批用例；Windows 上跳过 shell 夹具） |
 | 启动器注入工具链环境（D33） | ✅ **已实现并实测**（v3.5，FR-22；C1 的环境实验见 §2.8） | ✅ CI（生成的块过 `sh -n`） | ✅ CI |
+| 入口落在家目录顶层（D35） | ✅ **已实现并实测**（v3.6；`payloadTop` + `checkAppDir`，`internal/install/layout_test.go` 四条用例） | ✅ CI | ✅ CI |
 
 > "✅ CI" ≠ "在真机上手动点过一遍"。它等于：**在那个操作系统的 runner 上，测试真的落盘、真的写注册表、真的建 `.lnk` 并读回来**。这三件事里最容易只在真机上暴露的（路径分隔符、可执行位、PATH 的类型与空条目）都已经由 CI 抓过一次或两次（§0.3.1）。
 
@@ -654,7 +674,7 @@ gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文
 <装配目录>/
 ├── ad-manifest.yaml              # 文件名 = <简称>-manifest.yaml（v3.5）
 ├── tools/<os>_<arch>/{cot,tdp}   # 选填；requires 声明了才需要（D32）
-└── payload/…
+└── payload/<入口>                # 根下只能有这一个条目（v3.6、D35）
 ```
 
 `gpm pack <装配目录>` 会就地补齐另外几样（`install.sh`、`install.cmd`、`SHA256SUMS`），挑一个 gpm 二进制塞进去，把 `tools/` 一并打进 zip **并纳入 `SHA256SUMS`**（坏掉的 cot 必须在动手之前就被发现，FR-20），然后产出 `<id>-<version>-<os>-<arch>.zip`。
@@ -784,7 +804,7 @@ exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}"
 | 包里的 `./gpm` | 被 `install.sh` 调这一次 | **用户机器上事先不需要有 gpm**——这就是 D20"zip 自带 gpm"的全部意思 |
 | `<家>/bin/gpm` | 用户之后敲 `gpm list` / `gpm where` / `gpm uninstall` | 装的时候把自己拷过去的那一份（D29）。那儿本来就有 gpm 则**不覆盖**，也不计入账本；卸载到最后一个包时删掉，但环境里有 `COT_HOME` / `TDP_HOME` 就留着 |
 | `<家>/bin/<cmd>` 终端启动器 | 用户在终端敲应用名（`ad movie.mp4`） | 先注入工具链环境（D33），再直接 exec 内层可执行文件（v3.5 起 macOS 不再用 `open`，因为它不给环境） |
-| `~/Applications/<Name>.app`（macOS） | 用户点图标、Spotlight、启动台 | 它是指向 `<家>/lib/<id>_<ver>_<os>_<arch>/<Name>.app` 的**符号链接**，不是拷贝 |
+| `~/Applications/<Name>.app`（macOS） | 用户点图标、Spotlight、启动台 | 它是指向 `<家>/<Name>.app` 的**符号链接**，不是拷贝（v3.6：目标就在家目录顶层） |
 | `.desktop`（Linux）/ 开始菜单 `.lnk`（Windows） | 桌面菜单 | Linux 的 `Exec=` 指向启动器；Windows 的 `.lnk` 指向应用本体（§2.7） |
 | PATH 标记块 | 每次开 shell 时被 source | `~/.zprofile` / `~/.zshrc` / `~/.profile`；Windows 上是 `HKCU\Environment` 的 `Path` |
 | `state.json` | **不被人调用**，只被 gpm 自己读写 | 卸载按它逐条回放（D28） |
@@ -827,6 +847,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 安装根与 `--default-dir` | `home.Resolve` / `home.ResolveInstall` 的五档优先级（`--dir` > **按 `requires` 取的家** > **从自己的位置推断** > **平台数据目录/<简称>** > 当前目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有 `state.json` / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`，没给 `--default-dir` 时脚本干脆**不传 `--dir`**（交给 gpm 按上面那条链自己定）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
 | 工具链自举 | 用一个会写日志的假 cot（脚本）：`requires` 非空时它被调用一次、收到的家参数正确；返回非 0 时整次安装失败且**一个字都没落下**；`requires` 为空时它**根本不被调用**（A1、A11） | `internal/install` |
 | 启动器环境注入 | 生成的 macOS 启动器里含 `export COT_HOME=…` 与 PATH 前置，交给 `zsh -n` 解析；真机上从终端启动一次，进程环境里能看到 `COT_HOME`（A12） | `internal/integrate` |
+| 入口落点 | 入口落 `<家>/<顶层名>`、`lib/` 保持空、账本 `dir` / `entry` 都在家里、卸载后入口消失；`payload/` 根下多一个条目 → 报错且不留痕；家里已有别人的同名文件 → 拒绝、`--force` 后覆盖；入口叫 `bin` / `lib` / `staging` / `state.json` → 即使 `--force` 也拒（D35） | `internal/install`（`layout_test.go`） |
 | 跨平台 | CI 矩阵 `{ubuntu,macos,windows}` 真跑单测；`{darwin,linux,windows} × {amd64,arm64}` 交叉编译 | §2.16 |
 | 静态检查 | `go vet` | 全仓 |
 
@@ -869,6 +890,8 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 
 **macOS `open` 不给环境（v3.5，C1）** 在同一天用探针 `.app` 实测过：`open` 起来的进程环境只有 15 项 launchd 基线（`PATH=/usr/bin:/bin:/usr/sbin:/sbin` 等），既没有 shell 的 PATH 也没有 `COT_HOME`；`open --env GPM_x=y` 的四种写法（`-a` 形式、选项在路径后、`--env` 在 `-a` 前、配 `--args`，含 `-n`）**全部不生效**；直接执行 `Contents/MacOS/run` 则环境完整继承。这就是 D33 改成直接 exec 的全部依据。另外记一笔：受限/沙箱宿主里 `/bin/ps` 会被拒（`Operation not permitted`），读 GUI 进程环境**只能用"自 dump 的最小 .app"这类夹具**，不能用 `ps eww`。
 
+**v3.6（入口落在家目录顶层）的真机验证（macOS，2026-10-09）**：拿 AI Desk 的 CI 产物 `ai-desk-0.2.0-darwin-arm64.zip`（run 37878476500），把包里的 `gpm` 换成当轮编出来的 v3.6 二进制，`env -u COT_HOME -u TDP_HOME HOME=/tmp/aidesk-e2e36/home ./install.sh` 装一遍——包里自带的 `cot 2.0.1` 铺进 `<家>/bin`（`cot --version` → `cot 2.0.1`）；`AI Desk.app` 落在 **`<家>/AI Desk.app`**（`ls <家>` → `AI Desk.app  bin  lib  staging  state.json`，**不再有** `lib/ai-desk_0.2.0_darwin_arm64/`，`lib/` 是空的）；`~/Applications/AI Desk.app` 软链指向 `<家>/AI Desk.app`；账本里 `dir` 与 `entry` **都是 `<家>/AI Desk.app`**、`entryKind: bundle`、`cmd: ad`、`verified: true`，`self` = `<家>/bin/gpm`；`bin/ad` 照 D33 直接 exec `<家>/AI Desk.app/Contents/MacOS/ai-desk`（不再 `open`），跑起来进程活着（stderr 只有沙箱不让写 `~/Library/Caches` 的噪音）。再装一次幂等（`bin/cot` 的 mtime 不变、打印"已经有一个 gpm，这次没覆盖它"）。卸装（带 `COT_HOME`）：`已删除 <家>/Applications/AI Desk.app` / `已删除 <家>/bin/ad` / `已删除 <家>/AI Desk.app` / `保留 <家>/bin/gpm：环境里 COT_HOME=…，这个家归工具链管`，`lib/` 依旧空着。
+
 ---
 
 ## 4. 里程碑
@@ -881,11 +904,12 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **M3 打包收进内核** | `gpm pack`：`SHA256SUMS` + 权限位 + 符号链接 + 三平台一致 | ✅ **已完成**（提交 `acb0c4a`） |
 | **M4 两个仓库的 CI** | gpm-go：三平台单测 + 六平台交叉编译 + tag 发版；ai-desk：三平台真打包 | ✅ **已完成并跑绿**（`242c54e`、`9e33ad7`） |
 | **M5 签名与公证** | macOS Developer ID + 公证 + `xcrun stapler`；Windows 代码签名 | ⏸ **用户明确暂缓**（放弃 1，先做 2 和 3）；仍是真正的发布阻塞项（§5 R1） |
-| **M6 未做的两件** | 合成 `.app` 外壳（需先给 `manifest.Entry` 加 `bin`）；启动器名字冲突检查（R4） | 待做 |
+| **M6 未做的两件** | 合成 `.app` 外壳（需先给 `manifest.Entry` 加 `bin`）；~~启动器名字冲突检查（R4）~~（v3.5 已做，FR-21） | 只剩合成外壳 |
 | **M7 运行中检查** | `internal/proc`（macOS/Linux/Windows 三平台）+ install/uninstall 的拦截闸 + `--force`；真机上拿 AI Desk 验过（拒绝、`--force`、无假阳性、幽灵进程仍在） | ✅ **已完成并实测** |
 | **M8 改名 + 装到哪儿解耦** | 全仓 `cpi`→`gpm`（模块路径、`GPM_HOME`、`cmd/gpm`、CI、tools）；`home.Resolve` 删掉 `~/ad` 硬编码；`gpm pack --default-dir`；`<bin>/gpm` 已存在不覆盖；文档同步（§0.5、§0.3.3、§2.17） | ✅ **已完成**（v3.3） |
 | **M9 从自己的位置推断家目录** | `home.RootFromSelf()`（三条判据）+ `Resolve` 多一档 + 四条新测试（含三种"看着像但不是"的反例）；真机验证不带 `--dir` 的 `gpm list`；文档同步（§0.3.4、§2.3、D21、O11 关闭） | ✅ **已完成**（v3.4） |
 | **M10 工具链自举 + 家合并（v3.5）** | `<简称>-manifest.yaml` 与 `requires:`；install.sh 跑 zip 自带的 `cot i -s <家>`（失败不继续）；家改成 `$COT_HOME` / `$TDP_HOME`、`GPM_HOME` 退场；`requires` 为空时落平台数据目录/<简称>；macOS 启动器注入环境（有 `requires` 才改成直接 exec）；启动器重名检查（FR-21）；文档同步（§0.3.5、§2.5.1） | ✅ **已完成**（v3.5）：`go vet` + `go test ./...` 全绿，并在本机用假 cot 跑通端到端（§3） |
+| **M11 入口落在家目录顶层（v3.6）** | `home.AppDir` / `payloadTop` / `checkAppDir`；payload 根下只许一个条目、入口名不许撞家骨架、家里已有的别人的同名东西要拒；`internal/proc` 的 darwin 正则收尾对齐裸入口；四条新用例（`layout_test.go`）+ 文档同步（§0.3.6、D35） | ✅ **已完成**（v3.6）：三平台 `go vet` + `go test ./...` 全绿，本机真机复验（§3） |
 
 ---
 
@@ -905,10 +929,11 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **R8** | **`.app` 外壳合成没有实现**（D24 的后半条） | 上游只发裸可执行文件的 macOS 应用，现在只能写 `entry.darwin.bundle`，写不出来就装不了；硬把它当 `exe` 收进来，用户拿到的是一个没有应用身份的东西 | 先给 `manifest.Entry` 加 `bin`，再照 §2.7 的配方实现（`Info.plist` 4 键 + **硬链接** `Contents/MacOS/<exe>`）。在实现之前，清单里**不要写没有 `.app` 的 macOS 应用**（M6） |
 | **R9** | **Tauri 前端依赖与 Rust crate 版本漂移** | 这个坑真实发生过：`package.json` 写 `"^2"` + 无 lockfile，CI 解析到比 `Cargo.lock` 更新的 `@tauri-apps/*`，`tauri build` 报 `Found version mismatched Tauri packages` 直接拒绝构建——**本机编得动只是因为 `node_modules` 里还是旧版本** | 已处理：三个 Tauri 包钉死确切版本 + 提交 `package-lock.json` + CI 用 `npm ci`。泛化教训：**凡是"本机能编、CI 编不了"的构建问题，先怀疑锁文件** |
 | **R10** | **进程探测会漏拦**（D31） | 三种漏法：① 进程的可执行文件不在包目录下（比如它自己 `chdir` 走了、或某个壳反过来启动）② 平台不支持枚举进程（`find_other.go`）③ 没权限看别人的进程。漏拦的后果回到 v3.1 的老样子（版本混用 / 幽灵进程），**但用户至少看到过一行提示** | 已接受：**宁可漏拦不可误拦**（FR-17）。真要补，方向是让应用自己上报（单实例锁 / pid 文件），但那要求应用配合，且把 gpm 从"看文件系统"拖进"看运行时协议"——不属于本版 |
-| **R11** | 同名/同目录的**另一个**进程被误判 | 比如用户从同一份 `lib/<id>_…/` 目录里手动跑了两次、或开发者拿这个目录当工作目录跑了个 shell | 前缀比对是**双向的**（`<pkg>/` 开头才算），实机测过"命令行里只是提到这个路径"不命中。真要更严只能校验进程的 `exe` 而不是 `argv[0]`——但那样会漏掉 AppImage 与 macOS 的 `open` 路径，得不偿失 |
+| **R11** | 同名/同目录的**另一个**进程被误判 | 比如用户从同一份入口（`<家>/<Name>.app`，或裸可执行文件）里手动跑了两次、或开发者拿那个目录当工作目录跑了个 shell | 前缀比对是**双向的**（`<pkg>/` 开头才算），实机测过"命令行里只是提到这个路径"不命中。真要更严只能校验进程的 `exe` 而不是 `argv[0]`——但那样会漏掉 AppImage 与 macOS 的 `open` 路径，得不偿失 |
 | **R12** | 改名会打断**仓库外**的调用方 | `cpi`→`gpm` 之后，`~/space/rust/ai-desk/tools/package.sh` 里的 `--cpi` 与 `CPI_BIN` 立刻报 `flag provided but not defined`。这类调用方不在本仓的 `git grep` 范围里，改名时**看不见** | 已处理：同步改了那个脚本（改成 `--gpm` / `GPM_BIN`，并让它把 `--default-dir "~/ad"` 传给 `gpm pack`）。泛化教训：**改 CLI 名字之前，先 grep 一遍仓库外谁在调它**——这是 `docs/DESIGN.md` 自己教不会的那一类知识 |
 | **R13** | macOS 启动器改直接 exec 之后，**丢掉 LaunchServices 语义**（双击等价、单实例激活、Dock / 最近使用） | 从终端启动可能开出第二个实例；Finder / 启动台那条路走 LaunchServices，拿不到注入的环境（A7） | 已接受为 v3.5 的代价：环境注入是刚需（C1）。两全的解是合成 `.app` 外壳（R8），在它落地之前两条路各有一个缺口 |
 | **R14** | 家合并之后，gpm 的账本与工具链的东西**同住一个目录** | `gpm uninstall` 的边界一旦写错就会删到用户的 go / java（D34 正是为此存在）；另外 `~/cot/bin` 里 gpm 自己装的 `gpm` 与 cot 的 `cot` 是邻居 | 账本只记自己写的东西，卸载按账本逐条回放、**不扫目录**；可能的加锁 / 改名留作 O16 |
+| **R15** | 入口搬到顶层之后，**更容易与用户自己放的东西撞名** | v3.5 那种 `<id>_<版本>_<平台>` 命名几乎不可能撞上；顶层一个叫 `ad` 的文件或目录就撞了 | 已处理：`checkAppDir` 在动手之前比对，已有非 gpm 的同名东西就拒绝、只有 `--force` 放行；骨架名（`bin` / `lib` / `staging` / `state.json` / `log`）连 `--force` 都不放行（D35） |
 
 ### 开放问题
 
@@ -946,8 +971,9 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | manifest | `<简称>-manifest.yaml`，描述一个应用怎么落地（`entry` + `launch`），以及要不要捎带工具链（`requires`） |
 | 工具链自举 | install.sh 跑 zip 自带的 cot / tdp 把它自己装进家（D32、§2.5.1）：离线，只装壳与 activate 框架，不装插件 |
 | `requires` | 清单里声明要哪家工具链（`cot` / `tdp`）的字段；它同时决定安装根与要不要走自举（D21、D32） |
-| payload | 应用的实际内容，原样落到 `lib/<id>_<ver>_<os>_<arch>/` |
-| entry | 可执行入口：`bundle:`（macOS `.app`）或 `exe:`（其它平台） |
+| payload | 应用的实际内容。**根下只许有一个条目**（v3.6），它整份落到 `<家>/<那个名字>` |
+| entry | 可执行入口：`bundle:`（macOS `.app`）或 `exe:`（其它平台）。落点见"入口落点" |
+| 入口落点 | `<家>/<payload 根下的顶层名>`（v3.6、D35）；`lib/<id>_<版本>_<平台>/` 是命令行插件的命名，gpm 不用它 |
 | 账本 / `state.json` | 装了什么 + 产生了哪些外部副作用的**唯一真相**；卸载按它回放 |
 | 集成 / integrate | 让装好的东西"能被用上"：终端启动器、图形入口、PATH |
 | 启动器 / launch | `bin/<cmd>` 下的小脚本，让"装完能从终端启动"成立（§2.8） |

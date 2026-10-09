@@ -44,12 +44,22 @@ func Find(dir string) ([]Process, error) {
 
 // pattern 拼出那条锚在行首的正则。
 //
+// pattern 拼出那条锚在行首的正则。
+//
+// 落点有两种形态（v3.6 起应用实体直接住在家里）：
+//
+//   - 入口是目录（macOS 的 .app）：进程的 argv[0] 在它里面，认 dir 后面
+//     跟一个分隔符这种；
+//   - 入口是裸可执行文件（Windows / Linux 的 exe）：argv[0] 就是它自己，
+//     后面跟一个空格（带参数）或者到头了。末尾这个边界不能省，否则
+//     /a/demo 会连累 /a/demo-extra。
+//
 // regexp.QuoteMeta 转义的那些字符（. + * ? ( ) | [ ] { } ^ $）恰好也是
 // POSIX 扩展正则的元字符，所以拼出来的串 pgrep 那边也认。
 func pattern(dir string) string {
 	var alts []string
 	for _, d := range prefixes(dir) {
-		alts = append(alts, regexp.QuoteMeta(strings.TrimRight(d, "/"))+"/")
+		alts = append(alts, regexp.QuoteMeta(strings.TrimRight(d, "/"))+"([ /]|$)")
 	}
 	if len(alts) == 0 {
 		// 到不了这儿（Find 已经把空 dir 挡掉了），但别让一个空正则去匹配所有人。

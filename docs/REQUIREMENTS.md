@@ -1,6 +1,8 @@
 # gpm 需求文档
 
-> §1–§2 由我手工填写，一字未改；§3–§8 是讨论后的草稿。全文已落进 [`DESIGN.md`](DESIGN.md) v3.5 并**实现完成**（M10，`go vet` + `go test ./...` 全绿，本机用假 cot 跑通端到端）；只剩 §7 里三条设计问题跟着 DESIGN 的 O14–O16 走。
+> §1–§2 由我手工填写，一字未改；§3–§8 是讨论后的草稿。全文已落进 [`DESIGN.md`](DESIGN.md) v3.6 并**实现完成**（M10 + M11，`go vet` + `go test ./...` 全绿，本机跑通端到端）；只剩 §7 里三条设计问题跟着 DESIGN 的 O14–O16 走。
+>
+> **v3.6 改了一处落地位置**（用户裁决，DESIGN D35）：GUI 应用的入口落**家目录顶层**（`<根>/AI Desk.app`），不再进 `lib/<id>_<版本>_<平台>/`——那句话原话是"GUI 程序不放到命令行程序中类似的位置"。`payload/` 根下只许有入口一个条目；入口名不许撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）；家里已有别人的同名东西时拒绝、`--force` 才放行。下文凡出现 `lib/<id>_…` 的地方，都已按此改过（历史上 v3.5 是这样，理由见 DESIGN §0.3.6）。
 
 ## 1. 背景与动机
 我已经开发了cot_cli与tdp-cli，都是给程序员用的开发和管理工具。现在要给非开发人员准备带GUI的Desktop工具。
@@ -38,11 +40,11 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 **F7 启动器注入工具链环境**：`<根>/bin/<简称>` 在启动应用前注入工具链环境：按场景 export 自己的家变量（cot 场景 `COT_HOME=<根>`、tdp 场景 `TDP_HOME=<根>`，与 C11 一致 —— 不替 cot 造 `TDP_HOME=${COT_HOME}` 这个兼容值），把 `<根>/bin` 前置到 `PATH`，并在 `<根>/bin/env-cot.vars` 存在时 source 它（只含变量与 PATH，不执行插件 `cmd` 行，与 cot 自己的信任边界一致）。干净机器上该文件里没有插件变量，能保证的就是家变量与 PATH（C4、X2）。Linux 由 exec 继承；Windows 写用户级环境变量；**macOS 上只有"有工具链要注入"（即 `requires` 非空）的包才改用"直接 exec `.../Contents/MacOS/<binary>`"**（决策 ①，理由见 C1；代价是丢 LaunchServices 语义，见 DESIGN R13）；没有 `requires` 时不改道，`activate` 照旧 `exec open … --args`，双击语义不丢。这一条必须真机验证 AI Desk 是否有回归，有回归则升级为 R8 的合成 `.app` 外壳。v1 只保证**命令行启动器**这条路径注入环境，Finder 双击启动的实例不注入（见 X7）。
 
-**F8 落地位置（细化 D21/D24）**：payload → `<根>/lib/<id>_<version>_<os>_<arch>/`；macOS 入口以 `.app` 落地；简称启动器 → `<根>/bin/<cmd>`；图形入口软链 → `~/Applications/<name>.app`。**不存在"GUI 程序装进 bin/"的形态**。
+**F8 落地位置（细化 D21/D24/D35）**：payload 里那**一个**入口 → `<根>/<入口顶层名>`（macOS 就是 `<根>/AI Desk.app`，与 `bin/`、`lib/`、`state.json` 平级；v3.6 以前是 `<根>/lib/<id>_<version>_<os>_<arch>/`）；macOS 入口以 `.app` 落地；简称启动器 → `<根>/bin/<cmd>`；图形入口软链 → `~/Applications/<name>.app`。**不存在"GUI 程序装进 bin/"的形态**；`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（cot 在用）。
 
-**F9 归属与卸载边界（细化 D28）**：gpm 只回放自己写的东西（`lib/` 下自己的目录、`bin/<cmd>`、软链、rc 里的 `# >>> gpm >>>` 块）。`<根>/bin/cot`、`env-cot*`、`lib/` 下 cot 自己的包都不在账本里，`gpm uninstall` 一律不碰；`~/cot` 目录本身也不删。
+**F9 归属与卸载边界（细化 D28）**：gpm 只回放自己写的东西（自己的入口——v3.6 起是 `<根>/<入口顶层名>`，v3.5 是 `lib/` 下自己的目录——、`bin/<cmd>`、软链、rc 里的 `# >>> gpm >>>` 块）。`<根>/bin/cot`、`env-cot*`、`lib/` 下 cot 自己的包都不在账本里，`gpm uninstall` 一律不碰；`~/cot` 目录本身也不删。
 
-**F10 简称规则与重名检查**：简称必须三平台可用（`ac` 撞 macOS `/usr/sbin/ac`，见 C8 与 §7-4）；生成启动器前必须检查 `<根>/bin/<cmd>` 是否已被非 gpm 的文件占用（补 R4/O3），占用则报错，不静默覆盖；只有 `--force` 放行。同一个家里这个命令名若已被账本里**别的包**占着，或 `<cmd>` 就是 `gpm` 自己，同样报错。
+**F10 简称规则与重名检查**：简称必须三平台可用（`ac` 撞 macOS `/usr/sbin/ac`，见 C8 与 §7-4）；生成启动器前必须检查 `<根>/bin/<cmd>` 是否已被非 gpm 的文件占用（补 R4/O3），占用则报错，不静默覆盖；只有 `--force` 放行。**v3.6 起还要查入口本身**：`<根>/<入口顶层名>` 已被非 gpm 的东西占着时同样报错、`--force` 才放行；入口名撞家骨架（`bin` / `lib` / `staging` / `state.json` / `log`）或 `payload/` 根下多出一个条目，则连 `--force` 也拒（DESIGN D35、FR-23）。同一个家里这个命令名若已被账本里**别的包**占着，或 `<cmd>` 就是 `gpm` 自己，同样报错。
 
 **F11 tdp 同机制**：`tdp i -s "<根>"`；本次不测。
 
@@ -60,7 +62,7 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 ## 5. 明确不做（非目标）
 
 - **X1** 不做应用商店、不做自动更新、不做网络抓取（保持"没有一行网络代码"）。
-- **X2** 不安装 cot 的插件（go / java / fzf 等，本机 49 个包）—— zip 只带 cot 自身，**干净机器上 `~/cot/lib` 保持空着**（只有 gpm 装的 GUI 应用会出现在那里），工具链内容仍由用户自己 `cot install` 决定（用户决策）。
+- **X2** 不安装 cot 的插件（go / java / fzf 等，本机 49 个包）—— zip 只带 cot 自身，**干净机器上 `~/cot/lib` 保持空着**（v3.6 起 gpm 装的 GUI 应用也落在家的顶层，不占 `lib/`），工具链内容仍由用户自己 `cot install` 决定（用户决策）。
 - **X3** 不管理 `<根>/lib` 下 cot 自己的包：不清理、不升级、不记账。
 - **X4** 不引入第二个"家"：不新增 `GPM_HOME` 之类的变量，统一以 `COT_HOME` / `TDP_HOME` 为根（用户决策）。**去掉 `~/ad`**：新版不做兼容、不读旧账本、不迁移；旧安装用旧 gpm 自己回放清理（`~/ad/bin/gpm uninstall ai-desk`，它会把三份 rc 里的 `$HOME/ad/bin` 块与 `~/Applications/AI Desk.app` 软链一起收掉），然后删掉 `~/ad`；不接受直接 `rm -rf ~/ad` 留下悬空的 PATH 块。
 - **X5** 不做 .dmg / NSIS / AppImage 分发，仍是 zip + 脚本。
@@ -93,18 +95,19 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 ## 8. 验收标准
 
-- **A1** 干净机器 + 断网 + `./install.sh`：`command -v cot` 有输出；`~/cot/bin/cot --version` 可运行；`command -v ad` 有输出；`~/Applications/AI Desk.app` 存在；`~/cot/lib/ai-desk_0.2.0_darwin_arm64/AI Desk.app` 存在。
+- **A1** 干净机器 + 断网 + `./install.sh`：`command -v cot` 有输出；`~/cot/bin/cot --version` 可运行；`command -v ad` 有输出；`~/Applications/AI Desk.app` 存在；**`~/cot/AI Desk.app` 存在**（v3.6；不再有 `~/cot/lib/ai-desk_0.2.0_darwin_arm64/`）。
 - **A2** `~/.zprofile`、`~/.zshrc`、`~/.profile` 各恰有一个 `# >>> gpm >>>` 块，块内含 `$HOME/cot/bin`（或等价绝对路径）。
 - **A3** 幂等：连跑两次 install.sh，上述三个 rc 文件、`~/cot/bin/ad`、软链、`state.json` 的 packages 段不变。
 - **A4** `gpm list` 含 ai-desk；账本 entry 指向 `.app`、`cmd=ad`、`verified=true`。
 - **A5** 跳过：预置一个可用的 `~/cot`（含 `env-cot` 等资产）后再装：`~/cot/bin/cot` 的 mtime 不变，安装仍成功（exit 0）。
 - **A6** 原子性：把 zip 里的 cot 换成不可执行的坏文件后跑 install.sh：退出码非 0；`~/cot/bin/ad`、`~/Applications/AI Desk.app`、rc 里的 `# >>> gpm >>>` 块、账本里的该包**都不存在**。
 - **A7** 许可降级：对 PATH 集成回答"拒绝"：安装成功；rc 文件字节不变；`gpm list` 有该包；安装输出里给出了手动 `export PATH=…` 的办法（`gpm env` 也能打印同一行）。
-- **A8** 卸载：`gpm uninstall ai-desk` 后 `<根>/lib/ai-desk_*`、`<根>/bin/ad`、`~/Applications/AI Desk.app`、rc 块全部消失/还原；`~/cot/bin/cot`、`env-cot*`、`lib/` 下 cot 的包仍在；`command -v ad` 找不到。
+- **A8** 卸载：`gpm uninstall ai-desk` 后 `<根>/AI Desk.app`（v3.5 装的老包则是 `<根>/lib/ai-desk_*`）、`<根>/bin/ad`、`~/Applications/AI Desk.app`、rc 块全部消失/还原；`~/cot/bin/cot`、`env-cot*`、`lib/` 下 cot 的包仍在；`command -v ad` 找不到。
 - **A9** 重名：先手工放一个非 gpm 的 `~/cot/bin/ad`，安装必须报错且不覆盖该文件。
 - **A10** 简称冲突：拿一个已被账本里别的包占着的 `<cmd>` 再装一个包 → 报错、账本不变；`--force` 才覆盖（`internal/install` 的 `TestInstallRefusesCmdOwnedByAnotherPackage`）。`ac` 本身不再单独裁决（只是举例）。
 - **A11** `requires` 为空的包：即使 zip 里带了 cot 也不跑它、`~/cot` 一个字节都不新增；安装落在平台数据目录 + 简称（`~/Library/Application Support/ad`），PATH 块指向那里的 `bin/`，`command -v ad` 能找到。
 - **A12** 环境注入：从命令行执行 `ad` 启动后，AI Desk 进程的环境里能看到 `COT_HOME`（macOS 按决策 ① 验收；同时记录 Finder 双击启动时不注入 —— X7）。
-- **A13** 干净机器上装完，`~/cot/lib` 里**没有**任何 cot 插件目录（只有 gpm 装的 GUI 应用，如 `ai-desk_0.2.0_darwin_arm64`）；`cot list` 为空。
+- **A13** 干净机器上装完，`~/cot/lib` 里**没有**任何 cot 插件目录，也**没有** `ai-desk_*`（v3.6：GUI 应用落在家目录顶层）；`cot list` 为空。
 - **A14** 清理旧 `~/ad` 后：三份 rc 里不再有 `$HOME/ad/bin` 的 gpm 块，`~/ad` 目录被删除，`~/ad/state.json` 不存在；若已在 `~/cot` 下重装，`command -v ad` 仍能通过新启动器找到。
   - 本机已于 2026-10-09 执行完毕：`~/ad/bin/gpm uninstall ai-desk`（旧 v34 回放）→ `rm -rf ~/ad`。实测输出为 6 条删除 + 3 条"已摘除 PATH 标记块"，`~/Applications/AI Desk.app` 软链一并消失；三份 rc 里 gpm 行数归 0，`~/.zshrc:141` 摘块留下的 3 个连续空行已收敛为 1；`alias c` 与 token 导出未受影响。
+- **A17** 入口落点与三道闸（v3.6）：装完 `<根>/AI Desk.app` 存在且 `<根>/lib` 下没有 `ai-desk_*`；`payload/` 根下多放一个文件 → 安装报错且不留痕；家里先手工放一个非 gpm 的 `~/cot/ad` → 报错、`--force` 才覆盖；`entry` 名字取 `bin` / `lib` / `staging` / `state.json` → 即使 `--force` 也拒（`internal/install/layout_test.go` 四条用例）。

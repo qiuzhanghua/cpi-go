@@ -418,9 +418,9 @@ func TestHomeLayout(t *testing.T) {
 	if got, want := h.Platform(), h.GOOS+"_"+h.GOARCH; got != want {
 		t.Errorf("Platform = %q，想要 %q", got, want)
 	}
-	if got, want := h.PackageDir("ai-desk", "1.0.0"),
-		filepath.Join(root, "lib", "ai-desk_1.0.0_"+h.Platform()); got != want {
-		t.Errorf("PackageDir = %q，想要 %q", got, want)
+	if got, want := h.AppDir("AI Desk.app"),
+		filepath.Join(root, "AI Desk.app"); got != want {
+		t.Errorf("AppDir = %q，想要 %q", got, want)
 	}
 }
 

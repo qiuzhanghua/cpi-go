@@ -42,7 +42,7 @@ func fakeInstall(t *testing.T) (root, pkgDir string, app *exec.Cmd) {
 		t.Fatal(err)
 	}
 
-	pkgDir = h.PackageDir("demo", "0.1.0")
+	pkgDir = h.AppDir("demo")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +188,10 @@ launch:
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkgDir := h.PackageDir("demo", "0.1.0")
-	app := exec.Command(filepath.Join(pkgDir, "demo"), "-test.run=TestNothing")
+	pkgDir := h.AppDir("demo")
+	// 这个夹具在所有平台上都把入口写成一个裸文件 payload/demo，
+	// 落点就是 <家>/demo 本身。
+	app := exec.Command(pkgDir, "-test.run=TestNothing")
 	app.Env = append(os.Environ(), helperEnv+"=1")
 	app.Stdout, app.Stderr = io.Discard, io.Discard
 	if err := app.Start(); err != nil {
@@ -211,7 +213,7 @@ launch:
 			t.Errorf("人话里少了 %q，实际输出：\n%s", want, out.String())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(pkgDir, "demo")); err != nil {
+	if _, err := os.Stat(pkgDir); err != nil {
 		t.Errorf("被拦下之后安装目录不该被动：%v", err)
 	}
 	if led, err := ledger.Load(h.LedgerPath()); err != nil {
