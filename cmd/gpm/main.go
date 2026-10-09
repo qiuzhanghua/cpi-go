@@ -52,7 +52,8 @@ func reorder(fs *flag.FlagSet, args []string) []string {
 }
 
 // version 是变量不是常量，好让发布流程用 -ldflags "-X main.version=..." 覆盖。
-var version = "0.1.0-dev"
+// 这个默认值只给本地 go build 用；发布产物一律由 tag 注入真版本号。
+var version = "0.5.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
