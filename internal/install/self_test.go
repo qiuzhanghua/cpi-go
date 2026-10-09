@@ -422,10 +422,14 @@ func TestInstallKeepsNewerSelfOutOfLedger(t *testing.T) {
 	}
 }
 
-// 全新的家里没有 bin/gpm：静默拷一份，不该冒出"覆盖 / 已经有一个"这类话。
+// 全新的家里没有 bin/gpm：静默拷一份，不该冒出任何关于"gpm 自己那一份"的话。
 //
 // 这条是开发 v3.11 时真机 e2e 抓出来的：一开始用 `Wrote && OldVer == ""` 同时表示
 // "新装"和"强制覆盖了读不出来的那份"，于是全新安装也会打一行"已按 --force 覆盖…"。
+//
+// 断言只认 gpm 自己那四句话，**不认"覆盖"这个词**：Windows 上全新安装照样会打出
+// "…Demo.lnk 已存在，没有覆盖它"（同一个测试进程里前一个用例建过那个快捷方式），
+// 拿一个通用词去断言会把无关消息一起算进来 —— 这条正是被 CI 的 windows 腿抓到的。
 func TestInstallSaysNothingAboutSelfWhenFresh(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Setenv("HOME", t.TempDir())
@@ -438,7 +442,12 @@ func TestInstallSaysNothingAboutSelfWhenFresh(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"覆盖", "已经有一个 gpm", "换成"} {
+	for _, bad := range []string{
+		"已经有一个 gpm",     // 留着旧的那两条
+		"换成 gpm",        // 替换了
+		"已按 --force 覆盖", // 强制覆盖了
+		"没能把 gpm 自己拷进",  // 拷贝那一步报错了
+	} {
 		if strings.Contains(out.String(), bad) {
 			t.Errorf("全新安装不该出现 %q：\n%s", bad, out.String())
 		}
