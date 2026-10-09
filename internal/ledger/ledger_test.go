@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,20 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 func TestLoadFallsBackToLegacyNameAndMigrates(t *testing.T) {
 	root, path := newHome(t)
 	legacy := filepath.Join(root, "state.json")
-	write(t, legacy, `{"schemaVersion":1,"self":"`+filepath.Join(root, "bin", "gpm")+`","packages":[{"id":"ai-desk","name":"AI Desk","version":"0.2.0","cmd":"ad","dir":"`+filepath.Join(root, "AI Desk.app")+`"}]}`)
+	// 用 Marshal 拼 JSON：Windows 的路径里全是反斜杠，手写会写出非法转义。
+	seed := Ledger{
+		SchemaVersion: SchemaVersion,
+		Self:          filepath.Join(root, "bin", "gpm"),
+		Packages: []Package{{
+			ID: "ai-desk", Name: "AI Desk", Version: "0.2.0", Cmd: "ad",
+			Dir: filepath.Join(root, "AI Desk.app"),
+		}},
+	}
+	b, err := json.MarshalIndent(seed, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, legacy, string(b))
 
 	l, err := Load(path)
 	if err != nil {
