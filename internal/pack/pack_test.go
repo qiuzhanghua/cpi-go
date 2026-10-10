@@ -806,6 +806,11 @@ launch:
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Windows 的文件系统没有 Unix 权限位，Materialize 出来一律是 0666，
+		// 和 pack_test.go 里另外两处一样跳过；zip 里存的 mode 在别处断言。
+		if runtime.GOOS == "windows" {
+			continue
+		}
 		if gotX := fi.Mode().Perm()&0o111 != 0; gotX != tc.wantX {
 			t.Errorf("%s（%s）的 x 位：得到 %v，想要 %v", tc.rel, tc.reason, fi.Mode(), tc.wantX)
 		}
