@@ -7,7 +7,7 @@
 **没有 `upgrade` 子命令，也没有一行网络代码**（`grep -rn 'net/http\|http.Get\|net/url' --include='*.go' .` 无命中）。
 分发者自己决定什么时候出新版本、用户自己把 zip 拿过来 —— 这是整套设计的前提，不是「以后补上」。
 
-- 当前软件版本 **v0.6.4**，设计契约 **v3.14**（[两套版本号](#两套版本号)）。
+- 当前软件版本 **v0.6.5**，设计契约 **v3.14**（[两套版本号](#两套版本号)）。
 - macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` 里只有几行胶水
   （切到自己的目录、把家解析成一个具体路径、把安装交给 gpm、把用户给的参数原样转交）。
 - **主要用户**是拿到分发包、想双击装上的非开发人员；**次要用户**是要 `--yes` 无人值守的 CI 与内网运维。
@@ -273,7 +273,7 @@ AI Desk 的 `tools/package.sh` 就是这套东西的一层壳，可当完整例�
 gpm 的 release 产物命名是**别的仓库的构建契约**：
 
 ```text
-gpm-<版本>-<os>-<arch>[.exe]        例如 gpm-0.6.4-darwin-arm64
+gpm-<版本>-<os>-<arch>[.exe]        例如 gpm-0.6.5-darwin-arm64
 ```
 
 ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了这里必须同步改 ai-desk 的
@@ -294,12 +294,12 @@ ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了�
 
 这个仓库里同时有两个「版本」，在 commit message 和别人的 README 里都会出现：
 
-* **软件版本 `v0.6.4`** —— git tag、release 资产名、`gpm version` 打印的那个。
+* **软件版本 `v0.6.5`** —— git tag、release 资产名、`gpm version` 打印的那个。
 * **设计契约 `v3.14`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
   `FR-*` / `A*` 的完整清单在 `docs/REQUIREMENTS.md`）与 `docs/PACKAGE-FORMAT.md` 顶部那句
   「契约 · 已冻结 · v3.14」。契约号变大表示**接口/行为**改了，软件版本按需发布。
 
-看到「gpm v3.11 起」说的是行为契约，看到「gpm 0.6.4」说的是那个二进制。
+看到「gpm v3.11 起」说的是行为契约，看到「gpm 0.6.5」说的是那个二进制。
 
 ## 文档
 
