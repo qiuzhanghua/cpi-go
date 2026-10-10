@@ -347,10 +347,12 @@ CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）：
 
 ```sh
 git tag -a v0.6.5 -m "gpm v0.6.5：……"
-git push gh main v0.6.5
+git push gh main v0.6.5        # GitHub：CI 与 Release 都在这儿
+git push gitee main v0.6.5     # Gitee：镜像，同样推 main 与 tag
 ```
 
-（这个仓库有两个远端：`gh` = GitHub，`gitee` = Gitee 镜像。CI 与发 Release 都在 GitHub。）
+（这个仓库有两个远端：`gh` = GitHub，`gitee` = Gitee 镜像。CI 与发 Release 都在 GitHub，
+Gitee 只做镜像 —— 但**两边都推 main 与 tag**，别只推一边。）
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) 收到 `v*` tag 后在 ubuntu 上交叉编出
 六份产物，跑 `gh release create` 建 Release 并附上（也可以在 Actions 页面手动指定 tag 触发）。
