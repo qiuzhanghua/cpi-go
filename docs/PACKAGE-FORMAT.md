@@ -1,4 +1,4 @@
-# gpm 包格式与安装布局（契约 · 已冻结 · v3.8）
+# gpm 包格式与安装布局（契约 · 已冻结 · v3.12）
 
 本文只记录**已经拍板**的接口。它是 `AI Desk` 的 CI 与 `gpm` 之间唯一的契约，
 两个仓库各自独立演进时以本文为准。
@@ -198,7 +198,7 @@ Windows 上的两条硬规定：
 set -eu
 cd "$(dirname "$0")"
 chmod +x ./gpm 2>/dev/null || true
-exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}"
+exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}" "$@"
 ```
 
 `install.cmd`：
@@ -208,11 +208,11 @@ exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}"
 setlocal
 cd /d "%~dp0"
 if not defined COT_HOME set "COT_HOME=%USERPROFILE%\cot"
-gpm.exe install . --dir "%COT_HOME%"
+gpm.exe install . --dir "%COT_HOME%" %*
 pause
 ```
 
-脚本只做三件事：切到自己的目录、把家解析成一个具体路径、把 gpm 叫起来。
+脚本只做四件事：切到自己的目录、把家解析成一个具体路径、把 gpm 叫起来、**把用户给的参数原样转交**——`install.sh` 结尾是 `exec ./gpm install . --dir "…" "$@"`、`install.cmd` 是 `gpm.exe install . --dir "…" %*`（v3.12、D42）。拼接位置固定在烘进去的 `--dir` **之后**，靠 Go flag「后出现者覆盖先出现者」让调用方显式给的家赢过打包默认值；`"$@"` 必须带引号（不带引号的 `$@` 会把带空格的路径再拆一次词），`%*` 不带引号（cmd 里 `"%*"` 会把整串并成一个参数）。
 **安装逻辑一行都不在脚本里**，所以三个平台不会各自跑偏。
 工具链自举同样不在脚本里——它由 gpm 按清单的 `requires` 编排（第 3 节、[`DESIGN.md`](DESIGN.md) §2.5.1）。
 
@@ -220,7 +220,7 @@ pause
 （或打包方给的 `--default-dir "~/cot"`）烘进来的默认值（`~` 展开：POSIX 用 `$HOME`，
 Windows 用 `%USERPROFILE%`）。没给 `--default-dir`、清单也没有 `requires` 时，脚本里
 **没有 `--dir` 这一项**——让 gpm 自己按第 1 节的链去定。**烘进去的只是默认值**：用户仍可用 `COT_HOME` / `TDP_HOME`
-环境变量或 `--dir` 覆盖。
+环境变量或 `--dir` 覆盖。v3.12 起，脚本收到的参数也会原样交给 gpm，所以 `./install.sh --dir ~/tdp` 里那个 `--dir` 排在烘进去的之后、直接盖掉它。
 
 `<bin>/gpm` 已经存在时**比一次版本**（v3.11、D41）：先跑它的 `--version` 把版本问出来，
 包里这份**严格更新**才替换掉它（并计入账本 `self`），同版本 / 更旧 / 问不出来（不是可
@@ -260,4 +260,4 @@ Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前�
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.9：卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.12：入口脚本把用户的参数原样转交（D42、FR-31）+ 安装器自己擦掉下载标记（D40）+ 收掉空的 `staging/`（D40）+ gpm 自身也能升级（D41）+ 卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。

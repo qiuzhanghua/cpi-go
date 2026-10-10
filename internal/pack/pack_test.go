@@ -383,6 +383,57 @@ func TestRequiresDrivesInstallerDir(t *testing.T) {
 	}
 }
 
+// TestInstallersForwardArgs 钉住 v3.12（D42）的那两行：入口脚本必须把用户给
+// 的参数原样转交给 gpm。
+//
+// 起因是一处真实的体验断裂：gpm 自己会在放弃 PATH 集成时打印一行可照抄的
+// `./gpm install . --yes`，而用户站在解压出来的目录里更顺手的写法是
+// `./install.sh --yes`。不转交的话这个参数被静默吞掉 —— 交互终端里退化成
+// 一个 y/N 询问，非交互（CI）里干脆跳过 PATH 集成，而退出码仍是 0。
+func TestInstallersForwardArgs(t *testing.T) {
+	for _, sh := range []string{
+		InstallScript("", nil),
+		InstallScript("~/cot", []string{"cot"}),
+		InstallScript("/opt/apps", []string{"cot"}),
+	} {
+		if n := strings.Count(sh, `"$@"`); n != 1 {
+			t.Errorf(`install.sh 里应当恰有一处 "$@"，实际 %d 处：\n%s`, n, sh)
+		}
+		// 不带引号的 `$@` 会把带空格的参数拆成多个；`"$@"` 才是逐个原样转交。
+		if strings.Contains(strings.ReplaceAll(sh, `"$@"`, ""), "$@") {
+			t.Errorf("install.sh 里有不带引号的 $@：带空格的路径会被拆开：\n%s", sh)
+		}
+		// 必须排在 gpm 与烘进去的 --dir 之后：flag 取后出现的那一个，所以用户
+		// 自己的 --dir / --yes / --with 才盖得住脚本里的默认值。
+		at := strings.Index(sh, `"$@"`)
+		if gpmAt := strings.Index(sh, "gpm install ."); gpmAt < 0 || at < gpmAt {
+			t.Errorf(`install.sh 里 "$@" 必须出现在 gpm install . 之后：\n%s`, sh)
+		}
+		if dirAt := strings.Index(sh, "--dir"); dirAt >= 0 && at < dirAt {
+			t.Errorf(`install.sh 里 "$@" 必须出现在 --dir 之后：\n%s`, sh)
+		}
+		if !strings.HasSuffix(strings.TrimRight(sh, "\n"), `"$@"`) {
+			t.Errorf(`install.sh 的末行应当是 exec ./gpm install .… "$@"：\n%s`, sh)
+		}
+	}
+
+	for _, cmd := range []string{
+		InstallBatch("", nil),
+		InstallBatch("~/cot", nil),
+		InstallBatch("", []string{"tdp"}),
+	} {
+		if n := strings.Count(cmd, "%*"); n != 1 {
+			t.Errorf("install.cmd 里应当恰有一处 %%*，实际 %d 处：\n%s", n, cmd)
+		}
+		if strings.Contains(cmd, `"%*"`) {
+			t.Errorf(`install.cmd 里的 %%* 不该带引号 —— 那会把所有参数粘成一个：\n%s`, cmd)
+		}
+		if gpmAt, at := strings.Index(cmd, "gpm.exe install ."), strings.Index(cmd, "%*"); gpmAt < 0 || at < gpmAt {
+			t.Errorf("install.cmd 里的 %%* 必须出现在 gpm.exe install . 之后：\n%s", cmd)
+		}
+	}
+}
+
 // 带工具链的包：tools/ 也要进 zip、也要进 SHA256SUMS（D32）。
 func TestBuildPacksToolsAndCoversThem(t *testing.T) {
 	dir := assembly(t)
