@@ -8,8 +8,8 @@
 分发者自己决定什么时候出新版本、用户自己把 zip 拿过来 —— 这是整套设计的前提，不是「以后补上」。
 
 - 当前软件版本 **v0.6.4**，设计契约 **v3.13**（[两套版本号](#两套版本号)）。
-- macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` 只做四件事
-  （切到自己的目录、给 gpm 补可执行位、把安装交给 gpm、把用户给的参数原样转交）。
+- macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` 里只有几行胶水
+  （切到自己的目录、把家解析成一个具体路径、把安装交给 gpm、把用户给的参数原样转交）。
 - **主要用户**是拿到分发包、想双击装上的非开发人员；**次要用户**是要 `--yes` 无人值守的 CI 与内网运维。
 
 ## 这是什么
@@ -74,7 +74,8 @@ Windows 是 `GUI-Setup.exe`，Linux 是顶层那个裸可执行文件。GUI-Setu
 - 命令行这条路不受影响：`./install.sh` 照跑，gpm 装完还会递归清掉入口上的 `com.apple.quarantine`（v3.10 起）。
 - 一定要双击的话，解压后先 `xattr -dr com.apple.quarantine <解压出来的目录>` 再双击。
 
-根治办法是签名 + 公证（`docs/DESIGN.md` 的 R1，未解）。
+根治办法是签名 + 公证 —— 那是发布阻塞项：quarantine 那一半已经由 v3.10 解决，
+签名/公证这一半还没做（`docs/DESIGN.md` 的 R1，状态 half done）。
 
 ## 装完的样子
 
@@ -105,17 +106,17 @@ Windows 是 `GUI-Setup.exe`，Linux 是顶层那个裸可执行文件。GUI-Setu
 
 ```text
 gpm install <目录或 .zip> [--dir PATH] [--with cot,tdp] [--yes] [--no-path] [--skip-verify] [--force]
-gpm list
-gpm where <id>
+gpm list [--dir PATH]
+gpm where <id> [--dir PATH]
 gpm uninstall <id> [--dir PATH] [--yes] [--force]
 gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH] [--setup PATH]
-gpm env
+gpm env [--dir PATH]
 gpm version
 ```
 
 | 命令 | 干什么 |
 |---|---|
-| `gpm install <目录或 .zip>` | 校验 → 解包 → 落入口 → 建启动器与图标 → 把副作用记进账本 |
+| `gpm install <目录或 .zip>` | 解包 → 校验和 → 工具链自举 → 落入口 → 建启动器与图标 → 把副作用记进账本 |
 | `gpm list`（`ls`） | 列出这个家里账本记着的包 |
 | `gpm where <id>` | 打印这个 id 的落点（应用在哪、启动器在哪） |
 | `gpm uninstall <id>`（`remove` / `rm`） | 照账本回放删除 |
@@ -123,6 +124,8 @@ gpm version
 | `gpm pack <装配目录>` | **发布者**侧：装配目录 → 分发包 zip |
 | `gpm version`（`--version` / `-v`） | 版本号 |
 | `gpm help`（`-h` / `--help`） | 上面这段用法 |
+
+`list` / `where` / `env` 都认 `--dir`，只是 `gpm help` 印出来的用法里没写全。
 
 日常最常用的几条：
 
@@ -148,17 +151,32 @@ gpm uninstall ai-desk                     # 交互终端上摊开要删的东西
 
 ### 家目录按这个顺序确定
 
+**安装时**（`gpm install`）：
+
 1. `--dir`
 2. 清单里 `requires` 第一家的家（`$COT_HOME` / `$TDP_HOME`，缺省 `~/cot` / `~/tdp`）
-3. **从 gpm 自己的位置推断**：`<家目录>/bin/gpm` 这个位置本身就把家说出来了
-   （所在目录正好叫 `bin`、文件名正好是 `gpm`、且上一级有账本），所以装完之后你在新终端里
-   敲 `gpm list` / `gpm where` / `gpm uninstall` **不用带 `--dir`**，也不靠 shell 替你记环境变量
+3. **从 gpm 自己的位置推断**
 4. 平台数据目录 + 简称（`requires` 为空时：macOS `~/Library/Application Support/<简称>`、
    Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）
 5. 当前目录
 
+**装完之后**（`list` / `where` / `uninstall` / `env`）走的是另一条链：
+
+1. `--dir`
+2. **从 gpm 自己的位置推断**
+3. `$COT_HOME` / `$TDP_HOME`
+4. 当前目录
+
+差别是「自己住哪个家」与「环境变量」谁优先：装完之后你敲的是 `<某个家>/bin/gpm list`，
+那个位置是**更具体的证据**（shell 里可能激活着另一个家，人却在看这一个），所以它排在环境变量前面；
+这条链也不看平台数据目录。**契约里写的（D21）是上面那一条** —— 两条链并存是代码现状，这一处待收口。
+
+「从 gpm 自己的位置推断」的判据：所在目录正好叫 `bin`、文件名正好是 `gpm`、
+且上一级有账本（`<家目录名>-state.json`，旧名 `state.json` 也认）——
+所以 `<家>/bin/gpm` 这个位置本身就把家说出来了，`/usr/local/bin/gpm` 这种地方不会被误认。
+
 装到哪儿通常由 `install.sh` / `install.cmd` 里烘着的 `--dir` 传进来（来自 `gpm pack --default-dir`
-或清单的 `requires`）；命令行上直接调 gpm 时才走上面这条链。
+或清单的 `requires`）；命令行上直接调 gpm 时才走上面这两条链。
 
 ## 三平台的副作用（全部登记在账本里）
 
@@ -176,7 +194,8 @@ gpm uninstall ai-desk                     # 交互终端上摊开要删的东西
 几个细节是踩出来的：
 
 * **macOS 上 zsh 不读 `~/.profile`**，所以落点按 `$SHELL` 算：zsh 写 `~/.zprofile` + `~/.zshrc`，
-  bash 写 `~/.bash_profile`，fish 写 `~/.config/fish/config.fish`；不论哪种都再写一份 `~/.profile` 兜底。
+  bash 在 macOS 上写 `~/.bash_profile`（Linux 上是 `~/.bashrc`），fish 写 `~/.config/fish/config.fish`。
+  除 fish 外都再写一份 `~/.profile` 兜底（fish 只写它自己那一份，写完就返回）。
   标记块本身是幂等守卫，重复写不会把 PATH 撑大。
 * **Windows 上读出什么类型就写回什么类型**（`REG_SZ` / `REG_EXPAND_SZ`）：用
   `[Environment]::SetEnvironmentVariable(..., "User")` 会把 `REG_EXPAND_SZ` 压成 `REG_SZ`，
@@ -184,8 +203,9 @@ gpm uninstall ai-desk                     # 交互终端上摊开要删的东西
 * **往返必须逐字节保真**：摘除时按 `;` 切分、只丢掉命中的那一条、空条目原样保留。
 * **启动器会注入工具链环境**：先注入 `COT_HOME` / `TDP_HOME` 与前置的 `<家>/bin`
   （`<家>/bin/env-cot.vars` 存在时 source 它），再 exec 应用。macOS 上因为 `open` 不给环境
-  （实测只有 15 项 launchd 基线），`requires` 非空时启动器会直接 exec `.app` 内层可执行文件 ——
-  代价是丢掉双击等价与单实例激活；`requires` 为空时照旧走 `open`，保住双击语义。
+  （实测只有 15 项 launchd 基线），**要注入环境（`requires` 非空）或清单写了 `mode: direct`** 的 bundle
+  都直接 exec `.app` 内层可执行文件 —— 代价是丢掉双击等价与单实例激活；只有
+  「bundle + `requires` 为空 + `mode: activate`」这一种组合才照旧走 `open`，保住双击语义。
 
 ## 发布者视角：造一个包
 
@@ -271,9 +291,9 @@ ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了�
 这个仓库里同时有两个「版本」，在 commit message 和别人的 README 里都会出现：
 
 * **软件版本 `v0.6.4`** —— git tag、release 资产名、`gpm version` 打印的那个。
-* **设计契约 `v3.13`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`A28` …）
-  与 `docs/PACKAGE-FORMAT.md` 顶部那句「契约 · 已冻结 · v3.13」。契约号变大表示**接口/行为**改了，
-  软件版本按需发布。
+* **设计契约 `v3.13`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
+  `FR-*` / `A*` 的完整清单在 `docs/REQUIREMENTS.md`）与 `docs/PACKAGE-FORMAT.md` 顶部那句
+  「契约 · 已冻结 · v3.13」。契约号变大表示**接口/行为**改了，软件版本按需发布。
 
 看到「gpm v3.11 起」说的是行为契约，看到「gpm 0.6.4」说的是那个二进制。
 
@@ -303,7 +323,7 @@ go build -trimpath -ldflags "-s -w -X main.version=0.6.5" -o gpm ./cmd/gpm
 | `cmd/gpm/` | CLI 分派与 `usage`（`install` / `uninstall` / `list` / `where` / `pack` / `env` / `version` / `help`） |
 | `internal/manifest/` | 清单解析与校验（`<简称>-manifest.yaml`） |
 | `internal/pack/` | `gpm pack`：装配目录 → 分发包（含生成 bootstrap 脚本与 `SHA256SUMS`） |
-| `internal/install/` | 安装流水线：校验 → 解包 → 落入口 → 工具链自举 → 启动器与图标 → 记账 |
+| `internal/install/` | 安装流水线：解包 → 校验和 → 工具链自举（先装工具链：它装不上时应用这边一个字节都还没动）→ 落入口 → 启动器与图标 → 记账 |
 | `internal/integrate/` | 平台副作用：PATH 标记块、`~/Applications` 软链、`.desktop`、开始菜单与注册表 |
 | `internal/ledger/` | 账本 `<家>/<家目录名>-state.json`：所有外部副作用的唯一真相 |
 | `internal/stage/` | `staging/` 解包中转 |
