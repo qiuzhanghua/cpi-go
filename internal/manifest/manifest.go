@@ -79,7 +79,13 @@ type Manifest struct {
 	Version  string           `yaml:"version"`
 	Requires []string         `yaml:"requires,omitempty"`
 	Entry    map[string]Entry `yaml:"entry"`
-	Launch   Launch           `yaml:"launch"`
+	// Setup 是随包跑的 GUI 设置程序（GUI-Setup），按平台各一项，可缺省。
+	//
+	// 它与 Entry 的唯一区别是**相对谁**：entry 里的路径相对于 payload/，
+	// setup 里的路径相对于 zip 顶层（install.sh 那一层）。GUI-Setup 不进家里，
+	// 用户双击的就是它，装完就没用了（v3.13、D43）。
+	Setup  map[string]Entry `yaml:"setup,omitempty"`
+	Launch Launch           `yaml:"launch"`
 
 	short string // 清单文件名里的简称；来自文件名，不来自 YAML
 }
@@ -223,11 +229,35 @@ func (m *Manifest) EntryFor(goos string) (Entry, error) {
 	if (e.Bundle == "") == (e.Exe == "") {
 		return Entry{}, fmt.Errorf("entry.%s 必须恰好给 bundle 或 exe 之一", goos)
 	}
-	if err := checkRel(e.Rel()); err != nil {
+	if err := checkRel(e.Rel(), "payload/"); err != nil {
 		return Entry{}, fmt.Errorf("entry.%s: %w", goos, err)
 	}
 	return e, nil
 }
+
+// SetupFor 返回 goos 平台的 GUI 设置程序，并校验其形态。
+//
+// 清单没写 setup 是正常的（老包、不需要图形向导的包），返回零值；写了就必须
+// 覆盖被打包的平台 —— 否则发出的 zip 里躺着个双击没反应的目录，而清单还说有。
+func (m *Manifest) SetupFor(goos string) (Entry, error) {
+	if len(m.Setup) == 0 {
+		return Entry{}, nil
+	}
+	e, ok := m.Setup[goos]
+	if !ok {
+		return Entry{}, fmt.Errorf("清单的 setup 里没有 %s 平台，这个包不适用于本机", goos)
+	}
+	if (e.Bundle == "") == (e.Exe == "") {
+		return Entry{}, fmt.Errorf("setup.%s 必须恰好给 bundle 或 exe 之一", goos)
+	}
+	if err := checkRel(e.Rel(), "包根"); err != nil {
+		return Entry{}, fmt.Errorf("setup.%s: %w", goos, err)
+	}
+	return e, nil
+}
+
+// HasSetup 报告清单是否声明了随包的 GUI 设置程序。
+func (m *Manifest) HasSetup() bool { return len(m.Setup) > 0 }
 
 // Validate 检查清单自身是否合法，并确认 entry 覆盖了 goos。
 func (m *Manifest) Validate(goos string) error {
@@ -250,6 +280,9 @@ func (m *Manifest) Validate(goos string) error {
 	}
 	e, err := m.EntryFor(goos)
 	if err != nil {
+		return err
+	}
+	if _, err := m.SetupFor(goos); err != nil {
 		return err
 	}
 	if !cmdRe.MatchString(m.Launch.Cmd) {
@@ -313,7 +346,8 @@ func normalizeRequires(in []string) []string {
 	return out
 }
 
-func checkRel(p string) error {
+// checkRel 校验清单里的相对路径：where 是它相对的根，只用来写报错。
+func checkRel(p, where string) error {
 	if p == "" {
 		return fmt.Errorf("入口路径不能为空")
 	}
@@ -325,7 +359,7 @@ func checkRel(p string) error {
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
 	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("入口路径不能越出 payload/，得到 %q", p)
+		return fmt.Errorf("入口路径不能越出 %s，得到 %q", where, p)
 	}
 	return nil
 }

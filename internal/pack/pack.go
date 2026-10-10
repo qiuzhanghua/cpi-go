@@ -185,14 +185,21 @@ type Options struct {
 	// 留空表示打包方不指定：清单里有 requires 就装进那家工具链的家，
 	// 否则由 gpm 自己定（平台数据目录/<简称>）。
 	DefaultDir string
-	Log        io.Writer // 进度输出；留空则静默
+	// Setup 是随包的 GUI 设置程序（GUI-Setup）的路径：清单 setup: 段里
+	// 声明的那一份（macOS 是 .app 目录、Windows/Linux 是单个可执行文件）。
+	// 清单声明了就必须给（v3.13、D43）。
+	Setup string
+	Log   io.Writer // 进度输出；留空则静默
 }
 
 // Build 打出一个可分发的 zip，返回它的绝对路径。
 //
 // 产物的内容与顺序都已固定：
 //
-//	install.sh  install.cmd  gpm  <简称>-manifest.yaml  SHA256SUMS  payload/…  tools/…
+//	install.sh  install.cmd  [GUI-Setup]  gpm  <简称>-manifest.yaml  SHA256SUMS  payload/…  tools/…
+//
+// GUI-Setup 是清单 setup: 段声明了才有的（v3.13、D43），位置紧挨着两个安装脚本
+// ——解压出来第一眼看到的就是"双击这个"。
 func Build(opt Options) (string, error) {
 	goos, goarch := opt.GOOS, opt.GOARCH
 	if goos == "" {
@@ -215,6 +222,10 @@ func Build(opt Options) (string, error) {
 		return "", err
 	}
 	if err := m.Validate(goos); err != nil {
+		return "", err
+	}
+	setup, setupEntry, err := resolveSetup(opt.Setup, m, goos, log)
+	if err != nil {
 		return "", err
 	}
 
@@ -258,7 +269,7 @@ func Build(opt Options) (string, error) {
 	defer f.Close()
 
 	zw := zip.NewWriter(f)
-	err = writeAll(zw, dir, self, goos, opt.DefaultDir, sums, m)
+	err = writeAll(zw, dir, self, goos, opt.DefaultDir, sums, m, setup, setupEntry)
 	if cerr := zw.Close(); err == nil {
 		err = cerr
 	}
@@ -274,7 +285,7 @@ func Build(opt Options) (string, error) {
 	return out, nil
 }
 
-func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte, m *manifest.Manifest) error {
+func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte, m *manifest.Manifest, setup string, setupEntry manifest.Entry) error {
 	when := time.Now()
 
 	if err := addBytes(zw, InstallSH, 0o755, []byte(InstallScript(defaultDir, m.Requires)), when); err != nil {
@@ -282,6 +293,11 @@ func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte, m
 	}
 	if err := addBytes(zw, InstallCMD, 0o644, []byte(InstallBatch(defaultDir, m.Requires)), when); err != nil {
 		return err
+	}
+	if setup != "" {
+		if err := addSetup(zw, setupEntry.Rel(), setup, goos, when); err != nil {
+			return err
+		}
 	}
 
 	// 目标平台是 Windows 时，包里的二进制必须叫 gpm.exe —— install.cmd 调的就是它。
@@ -317,9 +333,136 @@ func writeAll(zw *zip.Writer, dir, self, goos, defaultDir string, sums []byte, m
 	return nil
 }
 
+// resolveSetup 把 --setup 给的路径与清单 setup: 段对一遍，返回要打进 zip 的那份。
+//
+// 两边都必须有，缺一个都是打包方忘了：清单说了有 GUI-Setup 而没给路径，发出去的
+// 包里就只有一个 install.sh（用户双击 .app 只会看到"打不开"）；给了路径而清单没
+// 声明，那个文件就白躺在 zip 里，GUI-Setup 自己按清单找根也找不到自己该是谁。
+//
+// 名字也要对得上：清单里写 `GUI-Setup.app`、命令行给 `/tmp/build/GUI-Setup.app`
+// 是同一份东西；写成别的名字就是清单在撒谎。形态（bundle 是目录、exe 是文件）
+// 一并查 —— 这条能挡住"把 .app 当成 exe 声明"这种错位。
+func resolveSetup(given string, m *manifest.Manifest, goos string, log io.Writer) (string, manifest.Entry, error) {
+	e, err := m.SetupFor(goos)
+	if err != nil {
+		return "", manifest.Entry{}, err
+	}
+	want := e.Rel()
+	if want == "" {
+		if given != "" {
+			return "", e, fmt.Errorf("给了 --setup %s，但清单的 setup 里没有 %s 平台：先在清单里声明它叫什么", given, goos)
+		}
+		return "", e, nil
+	}
+	if given == "" {
+		return "", e, fmt.Errorf("清单声明了 setup.%s（%s），打包时得用 --setup <路径> 指出那份文件", goos, want)
+	}
+	abs, err := filepath.Abs(given)
+	if err != nil {
+		return "", e, err
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return "", e, fmt.Errorf("找不到 --setup 给的 %s: %w", given, err)
+	}
+	if got := filepath.Base(abs); filepath.ToSlash(got) != filepath.ToSlash(want) {
+		return "", e, fmt.Errorf("--setup 给的是 %s，而清单 setup.%s 写的是 %s：名字得一致，GUI-Setup 就是按这个名字找自己的", got, goos, want)
+	}
+	if e.Kind() == "bundle" && !fi.IsDir() {
+		return "", e, fmt.Errorf("setup.%s 声明的是 bundle（%s），但 --setup 给的是个文件", goos, want)
+	}
+	if e.Kind() == "exe" && fi.IsDir() {
+		return "", e, fmt.Errorf("setup.%s 声明的是 exe（%s），但 --setup 给的是个目录", goos, want)
+	}
+	fmt.Fprintf(log, "随包的 %s：%s\n", want, abs)
+	return abs, e, nil
+}
+
+// addSetup 把 GUI-Setup 放进 zip 顶层。
+//
+// 目录（macOS 的 .app）整棵树搬，权限位与符号链接照旧 —— 里面的主可执行文件
+// 就是靠这一位跑起来的，而 Windows 的资源管理器解压、以及某些网盘/邮件中转
+// 都会把它丢掉（0644 的 .app 内层二进制是打包环节的常见事故：双击没反应，
+// 报错还看不出所以然）。所以对非 Windows 目标补一次 x 位：源文件已经有 x 位
+// 就原样保留，一个都没有就补成 0755。
+//
+// 补哪一份？只补 bundle 的主可执行文件，不是树里每个 0644 的文件 —— 把
+// Info.plist、资源文件也标成可执行是另一种坏包。名字先信 Info.plist 的
+// CFBundleExecutable，读不出来再退到 Contents/MacOS/<bundle 名去掉 .app>。
+func addSetup(zw *zip.Writer, name, src, goos string, when time.Time) error {
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		if goos == "windows" {
+			return addTree(zw, src, name, when)
+		}
+		main := bundleExecutable(src)
+		return addTreeWith(zw, src, name, when, func(rel string, mode fs.FileMode) fs.FileMode {
+			if main != "" && filepath.ToSlash(rel) == main && mode&0o111 == 0 {
+				return mode | 0o755
+			}
+			return mode
+		})
+	}
+	mode := fi.Mode().Perm()
+	if goos != "windows" && mode&0o111 == 0 {
+		mode |= 0o755
+	}
+	return addFile(zw, name, mode, src, when)
+}
+
+// bundleExecutable 猜出 .app 里的主可执行文件，返回相对 bundle 根的斜杠路径。
+func bundleExecutable(root string) string {
+	if b, err := os.ReadFile(filepath.Join(root, "Contents", "Info.plist")); err == nil {
+		if n := plistString(string(b), "CFBundleExecutable"); n != "" {
+			return "Contents/MacOS/" + n
+		}
+	}
+	base := filepath.Base(filepath.Clean(root))
+	stem := strings.TrimSuffix(base, ".app")
+	if stem == "" || stem == base {
+		return "" // 目录不叫 .app，猜不出主程序叫什么，那就不动权限位。
+	}
+	return "Contents/MacOS/" + stem
+}
+
+// plistString 从 plist 文本里抠出 <key>key</key> 后面那个 <string> 值。
+//
+// 只认这一种写法，够用：CFBundleExecutable 是可执行文件的名字，Xcode、Wails、
+// Tauri 生成的都是这个形状（中间没有嵌套的 <dict>）。抠不出来就返回空串，
+// 让调用方退到按名字猜。
+func plistString(s, key string) string {
+	marker := "<key>" + key + "</key>"
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(marker):]
+	open := strings.Index(rest, "<string>")
+	if open < 0 {
+		return ""
+	}
+	rest = rest[open+len("<string>"):]
+	end := strings.Index(rest, "</string>")
+	if end < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(rest[:end])
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return "" // 名字里带路径分隔符的一律不认。
+	}
+	return name
+}
+
 // sumsFor 生成 SHA256SUMS 的内容，路径相对包根（形如 `payload/AI Desk.app/…`
 // 或 `tools/darwin_arm64/cot`），只覆盖常规文件 —— 符号链接不算，这一点要和
 // stage.VerifySums 保持一致。工具链二进制也在覆盖范围内（D32）。
+//
+// 随包的 GUI-Setup（v3.13、D43）**不**在覆盖范围内：安装流程一个字节都不读它
+// （它跑在安装之前，是它自己叫 gpm 干活的），把它算进去只会让每个包多校验一份
+// 几十 MB 的东西。它和 install.sh / gpm / 清单是同一类：包根上的"信任起点"。
 func sumsFor(dir string) ([]byte, int, error) {
 	type entry struct{ path, sum string }
 	var entries []entry
@@ -399,6 +542,12 @@ func addFile(zw *zip.Writer, name string, mode fs.FileMode, src string, when tim
 // filepath.WalkDir 不会跟着符号链接走，正合需要：.app 里的链接该原样复制，
 // 不能展开成它指向的那份副本。
 func addTree(zw *zip.Writer, root, prefix string, when time.Time) error {
+	return addTreeWith(zw, root, prefix, when, nil)
+}
+
+// addTreeWith 是 addTree 的带修正版：fix 不为 nil 时，每个常规文件的权限位
+// 先过一遍它。搬 .app 时用它把主可执行文件的 x 位补回来，别的文件原样。
+func addTreeWith(zw *zip.Writer, root, prefix string, when time.Time, fix func(rel string, mode fs.FileMode) fs.FileMode) error {
 	if _, err := os.Stat(root); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("找不到 %s/", prefix)
@@ -444,7 +593,11 @@ func addTree(zw *zip.Writer, root, prefix string, when time.Time) error {
 			if err != nil {
 				return err
 			}
-			return addFile(zw, name, fi.Mode().Perm(), p, when)
+			mode := fi.Mode().Perm()
+			if fix != nil {
+				mode = fix(rel, mode)
+			}
+			return addFile(zw, name, mode, p, when)
 		}
 	})
 }

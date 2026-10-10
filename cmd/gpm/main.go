@@ -53,7 +53,7 @@ func reorder(fs *flag.FlagSet, args []string) []string {
 
 // version 是变量不是常量，好让发布流程用 -ldflags "-X main.version=..." 覆盖。
 // 这个默认值只给本地 go build 用；发布产物一律由 tag 注入真版本号。
-var version = "0.6.3-dev"
+var version = "0.6.4-dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -210,6 +210,7 @@ func cmdPack(args []string) error {
 	goarch := fs.String("arch", "", "目标架构（默认当前架构）")
 	self := fs.String("gpm", "", "要嵌进包里的 gpm 可执行文件（默认当前进程）")
 	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd 的默认安装根，如 ~/cot（留空则按清单 requires 决定）")
+	setup := fs.String("setup", "", "随包的 GUI-Setup 的路径（清单 setup: 段声明的那份）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm pack <含 <简称>-manifest.yaml 与 payload/ 的目录> [选项]")
 		fs.PrintDefaults()
@@ -228,6 +229,7 @@ func cmdPack(args []string) error {
 		GOARCH:     *goarch,
 		Self:       *self,
 		DefaultDir: *ddir,
+		Setup:      *setup,
 		Log:        os.Stdout,
 	})
 	if err != nil {
@@ -263,7 +265,7 @@ func usage(w *os.File) {
   gpm list
   gpm where <id>
   gpm uninstall <id> [--dir PATH] [--yes] [--force]
-  gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]
+  gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH] [--setup PATH]
   gpm env
   gpm version
 

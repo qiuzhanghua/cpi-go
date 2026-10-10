@@ -14,6 +14,9 @@
 >
 > **v3.12 让入口脚本把参数转交出去**（[`DESIGN.md`](DESIGN.md) D42、§0.3.12、FR-31）：`gpm pack` 生成的 `install.sh` / `install.cmd` 末尾拼上 `"$@"` / `%*`，位置固定在烘进去的 `--dir` **之后**。起因是 AI Desk 0.3.1 的真机 e2e：`./install.sh --yes` 里的 `--yes` 被 shell 吃掉，gpm 在非交互环境里直接跳过 PATH 集成，而同一份包加不加参数结果一模一样。落地见 F16、A27。
 >
+> **v3.13 让分发包里能坐一个图形安装器**（[`DESIGN.md`](DESIGN.md) D43、§0.3.13、FR-32）：清单新增 `setup:` 段（与 `entry:` 平行，但路径**相对包根**），`gpm pack --setup` 把它放在 zip **顶层**、与 `install.sh` 并排，**不进 `payload/`、不进 `SHA256SUMS`**（与 `install.sh` / `gpm` / 清单同类：包根上的"信任起点"）；非 Windows 的 `.app` 里只给 `Info.plist` 点名的那个主可执行文件补 `0755`。落地见 F17、A28。
+
+>
 > **v3.11 让 gpm 自己也能升级**（[`DESIGN.md`](DESIGN.md) D41、§0.3.11）：装完应用之后问一次 `<根>/bin/gpm` 的版本（执行它的 `--version`），包里这份**严格更新**才替换；同版本 / 更旧 / 问不出来一律留着（`--force` 才无视版本覆盖）。这**修订了 D29** 那句"已经有一个 gpm 就不覆盖"，并关闭 O7。用户原话："gpm 增加一个 --version 功能，方便安装的时候做比较，如果是新版本就替换旧版本"。落地见 F15、A26，代价与降低手段记在 R19。
 
 ## 1. 背景与动机
@@ -70,6 +73,8 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 **F16 入口脚本把参数转交出去（v3.12）**：`gpm pack` 生成的 `install.sh` 末尾是 `exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}" "$@"`，`install.cmd` 是 `gpm.exe install . --dir "%COT_HOME%" %*`。用户（或图形安装器）传的 `--dir` / `--with` / `--yes` / `--no-path` 因此真的到达 gpm；`--dir` 排在烘进去那个**之后**，靠 Go flag「后出现者覆盖先出现者」生效，所以**调用方显式给的家赢过打包默认值**。`"$@"` 必须带引号（不带引号的 `$@` 会把带空格的路径再拆一次词），`%*` 不带（cmd 里 `"%*"` 会并成一个参数）。见 [`DESIGN.md`](DESIGN.md) D42、FR-31。
 
+**F17 分发包能捎带一个图形安装器（v3.13）**：清单 `setup:` 段声明随包的 GUI-Setup（`setup.<goos>` 与 `entry.<goos>` 同形，`bundle` / `exe` 二选一，**相对包根**）；`gpm pack --setup <路径>` 把它放 zip **顶层**、不进 `payload/`、不进 `SHA256SUMS`。非 Windows 的 bundle 里只给 `Contents/Info.plist` 的 `CFBundleExecutable` 点名的那个文件补 x 位。清单声明了却没给 `--setup`、给了却没声明、名字对不上、bundle 给了文件、exe 给了目录、缺当前平台、路径越出包根——七种错法都在打包时报错且不留半包。见 [`DESIGN.md`](DESIGN.md) D43、FR-32。
+
 ## 4. 非功能需求
 
 - **N1 离线**：全流程不联网（保持 DESIGN §0.5 的身份宣言）。体积预算：每平台额外 +cot ≈ 4 MB、+tdp ≈ 7 MB（未压缩）。
@@ -107,7 +112,7 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 
 ## 7. 待确认
 
-> 已定（用户裁决）：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（C11）；`~/cot/lib` 保持空着、不多装插件（X2）；去掉 `~/ad`（X4）；macOS 注入走直接 exec（F7）；**`requires` 为空时用简称、缺省装到平台数据目录**（7-1）；**`ac` 只是举例、重名一律按 F10 拒绝**（7-4）；**v3.8 把原来的三条待确认也定了**：7-2（已装好判据，F5/D37）、7-3（回滚范围，F3/D37）、7-5 的加锁部分（不做锁，改原文比对，D38）；7-6 是新增的待确认（清单要不要能表达版本约束）。前两条已实现并验收（A15、A16）。**v3.9 的卸载许可不在 §7 里**——它不是待确认，是用户直接下的指令（"给 uninstall 也加个 --yes"），落地见 F12、A23。 **v3.12 的入口脚本转发参数也不在 §7 里**——同一条路径：用户直接裁决"修：让 install.sh 转发参数"，落地见 F16、A27。
+> 已定（用户裁决）：cot 场景认 `COT_HOME`、tdp 场景认 `TDP_HOME`（C11）；`~/cot/lib` 保持空着、不多装插件（X2）；去掉 `~/ad`（X4）；macOS 注入走直接 exec（F7）；**`requires` 为空时用简称、缺省装到平台数据目录**（7-1）；**`ac` 只是举例、重名一律按 F10 拒绝**（7-4）；**v3.8 把原来的三条待确认也定了**：7-2（已装好判据，F5/D37）、7-3（回滚范围，F3/D37）、7-5 的加锁部分（不做锁，改原文比对，D38）；7-6 是新增的待确认（清单要不要能表达版本约束）。前两条已实现并验收（A15、A16）。**v3.9 的卸载许可不在 §7 里**——它不是待确认，是用户直接下的指令（"给 uninstall 也加个 --yes"），落地见 F12、A23。 **v3.12 的入口脚本转发参数也不在 §7 里**——同一条路径：用户直接裁决"修：让 install.sh 转发参数"，落地见 F16、A27。**v3.13 的图形安装器也一样**：那是 gsetup-go 需求讨论里的用户裁决（"GUI-Setup 放 zip 顶层"、"manifest 新增 `setup:` 字段"），落地见 F17、A28。
 
 - ~~**7-1** `requires` 为空的 GUI 应用装到哪个根？~~ **已定（用户）**：用简称、缺省装到平台数据目录（macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）；这时 gpm 是那个目录的建立者，装失败要把它收回去（`home.DropIfEmpty()`）。见 DESIGN D21、§2.3。
 - ~~**7-2（阻塞 F5 验收）**"已装好则跳过"的判定~~ **已定（用户）**：`<根>/bin/cot`（Windows `cot.exe`）在就跳过自举、`--force` 才重铺；不发明版本判据（F5、[`DESIGN.md`](DESIGN.md) D37、O14 关闭）。用户原话："本机已经安装好，并且修改了 .profile 之类的文件，就不用再安装"。
@@ -144,3 +149,4 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 - **A25** 不留空的 `staging/`（v3.10）：装完（成功路径）与"`payload/` 根下多一个条目被拦下"（失败路径，家是预先存在的）之后，`<根>/staging` 都不存在，而 `bin/`、`lib/` 照旧；先往 `<根>/staging/` 放一个 `unpack-999` 再装 → 那个目录还在（`internal/home/home_test.go` 两条、`internal/install/layout_test.go` 两条；注释掉那句 `defer` 后两条 install 用例立刻变红，DESIGN §3）。
 - **A26** gpm 自身升级（v3.11）：用三个只差 `-ldflags "-X main.version=…"` 的二进制在同一个家里依次装 —— 全新的家静默拷一份；`0.6.2` 换掉 `0.6.1` 并打印"从 gpm 0.6.1 换成 gpm 0.6.2"；再用 `0.6.1` 装则留着 `0.6.2` 并提示；`0.6.0 --force` 会降级替换；把 `<根>/bin/gpm` 换成一个纯文本文件时默认一个字节不动、加 `--force` 才覆盖；账本 `self` 只在"这次由我们写下去"时记。用例：`internal/install/version_test.go`（解析与 semver 优先级表驱动、`selfIsNewer` 的"拿不准就不换"）、`self_test.go`（六条出口 + 两条安装级 + 一条"全新安装不许冒出覆盖字样"的回归）、`selfver_unix_test.go`（在 Unix 上**真去 exec** 那个文件，含跑不起来 / 输出认不出 / 退出码非 0 三种）；真机 e2e 见 DESIGN §3「v3.11 的真机验证」。
 - **A27** 入口脚本转发参数（v3.12）：解压正式产物后 `./install.sh --yes` → cot / tdp 自举、`<根>/AI Desk.app` 与 `bin/ad` 落位、`~/Applications` 软链建好，**三份 rc 各恰一个 `# >>> gpm >>>` 块**（账本 `pathEdits` 三条 `created: true`）；同一份包**不带参数**跑 → 打印"没有读到你的输入，已跳过 PATH 集成"、**三份 rc 一个都没建**（这就是修复前后的对照）；`./install.sh --yes --dir <另一个家>` → 装进那个家（调用方的 `--dir` 赢过烘进去的默认值）；`./gpm uninstall ai-desk --yes --dir <家>` → rc 块 / 入口 / 软链 / `bin/gpm` 全清、账本 `packages: []`、两个工具链的 `bin/` 一个字节没动（`internal/pack/pack_test.go` 的 `TestInstallersForwardArgs` 三种取向 + 变异检验；真机见 DESIGN §3「v3.12（入口脚本转发参数）的真机验证」）。
+- **A28** 分发包捎带图形安装器（v3.13）：清单写 `setup: {darwin: {bundle: GUI-Setup.app}}` 后用 `gpm pack --setup <路径>` 打包 → zip **顶层**出现 `GUI-Setup.app`，`unzip -Z` 里 `Contents/MacOS/GUI-Setup` 是 `-rwxr-xr-x`（`file` 认得出 Mach-O），`grep -c GUI-Setup SHA256SUMS` = **0**，而 `payload/` / `tools/` 的校验照旧全过；**忘了给 `--setup`** → `清单声明了 setup.darwin（GUI-Setup.app），打包时得用 --setup <路径> 指出那份文件`、退出码 1、不留半包；解压后 `./install.sh --yes` 装一遍 → `<家>/cot/AI Desk.app` 与 `bin/ad` 照旧落位，而 `find <家> -iname "*GUI-Setup*"` **0 命中**（它不落家、账本里只有应用那一条）；卸载后解压目录里的 `GUI-Setup.app` 仍在（`internal/pack/pack_test.go` 的四条用例；真机见 DESIGN §3「v3.13（随包的图形安装器）的真机验证」）。

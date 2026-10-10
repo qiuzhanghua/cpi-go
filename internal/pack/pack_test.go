@@ -485,3 +485,329 @@ launch:
 		t.Errorf("install.sh 没按 requires 定家：\n%s", sh)
 	}
 }
+
+// setupAssembly 造一个声明了 setup: 的装配目录：GUI-Setup 躺在**包根**
+// （和 install.sh 同级），而清单里 entry 走的那份还在 payload/ 下。
+//
+// 内层的可执行文件故意写成 0644：打包时不该原样照抄这个权限位。
+func setupAssembly(t *testing.T) string {
+	t.Helper()
+	dir := assembly(t)
+
+	writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
+name: AI Desk
+version: 1.2.3
+entry:
+  darwin:
+    bundle: "AI Desk.app"
+  windows:
+    exe: AI Desk.exe
+setup:
+  darwin:
+    bundle: GUI-Setup.app
+  windows:
+    exe: GUI-Setup.exe
+launch:
+  cmd: ad
+  mode: activate
+`)
+
+	writeFile(t, filepath.Join(dir, "GUI-Setup.app", "Contents", "Info.plist"), 0o644, `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>GUI-Setup</string>
+</dict>
+</plist>
+`)
+	writeFile(t, filepath.Join(dir, "GUI-Setup.app", "Contents", "MacOS", "GUI-Setup"), 0o644, "#!/bin/sh\necho setup\n")
+	writeFile(t, filepath.Join(dir, "GUI-Setup.exe"), 0o644, "MZ-setup")
+	return dir
+}
+
+// index 返回名字在 zip 里的次序，找不到返回 -1。
+func index(names []string, want string) int {
+	for i, n := range names {
+		if n == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestBuildPacksSetupAtTopLevel 钉住 v3.13（D43）的交付形态：GUI-Setup 进
+// zip **顶层**（不经 payload/），x 位补齐，且不进 SHA256SUMS。
+//
+// 三条都不是小事：进 payload/ 会被当成「应用的内容」装进家里、还会跟着账本走；
+// x 位丢了用户双击没反应（Windows 的资源管理器解压、网盘中转都会丢这一位）；
+// 进 SHA256SUMS 就要每个包多校验几十 MB，而安装流程一个字节都不读它。
+func TestBuildPacksSetupAtTopLevel(t *testing.T) {
+	dir := setupAssembly(t)
+	out := filepath.Join(t.TempDir(), "out.zip")
+	self := filepath.Join(t.TempDir(), "gpm")
+	writeFile(t, self, 0o755, "FAKE-GPM")
+
+	if _, err := Build(Options{
+		Dir: dir, Out: out, GOOS: "darwin", GOARCH: "arm64", Self: self,
+		Setup: filepath.Join(dir, "GUI-Setup.app"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ns := names(t, out)
+	const want = "GUI-Setup.app/Contents/MacOS/GUI-Setup"
+	if !has(ns, want) {
+		t.Errorf("包里没有 %q：%v", want, ns)
+	}
+	if has(ns, "payload/GUI-Setup.app/Contents/MacOS/GUI-Setup") {
+		t.Error("GUI-Setup 被塞进了 payload/：那是「要装进家里的东西」，而 GUI-Setup 只在解压目录里跑一次")
+	}
+
+	// 位置：紧挨着两个安装脚本，排在 gpm 之前 —— 解压出来第一眼看见的就是它。
+	at, gpmAt, cmdAt := index(ns, "GUI-Setup.app/Contents/Info.plist"), index(ns, "gpm"), index(ns, InstallCMD)
+	if at < 0 || cmdAt < 0 || gpmAt < 0 || at < cmdAt || at > gpmAt {
+		t.Errorf("GUI-Setup 的位置不对（install.cmd=%d, setup=%d, gpm=%d）：%v", cmdAt, at, gpmAt, ns)
+	}
+
+	dst := filepath.Join(t.TempDir(), "unpacked")
+	if err := stage.Materialize(out, dst); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(dst, want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("GUI-Setup 的可执行位没补上：%v —— 双击会没反应", fi.Mode())
+	}
+	// 补 x 位是"只补主程序"，不是给整棵树加可执行 —— plist 不该跟着变。
+	pl, err := os.Stat(filepath.Join(dst, "GUI-Setup.app", "Contents", "Info.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.Mode().Perm()&0o111 != 0 {
+		t.Errorf("Info.plist 被标成了可执行：%v", pl.Mode())
+	}
+
+	b, err := os.ReadFile(filepath.Join(dst, stage.SumsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "GUI-Setup") {
+		t.Errorf("GUI-Setup 不该进 SHA256SUMS（安装流程不读它）：\n%s", b)
+	}
+	// 它不走 payload/，所以核对安装内容时依然对得上。
+	if ok, err := stage.VerifySums(dst, "payload"); err != nil || !ok {
+		t.Fatalf("VerifySums(payload) = %v/%v", ok, err)
+	}
+}
+
+// TestBuildPacksSetupExeOnWindows：Windows 那边 setup 是单个 .exe，也要落在顶层。
+func TestBuildPacksSetupExeOnWindows(t *testing.T) {
+	dir := setupAssembly(t)
+	out := filepath.Join(t.TempDir(), "out.zip")
+	self := filepath.Join(t.TempDir(), "gpm")
+	writeFile(t, self, 0o755, "FAKE-GPM")
+
+	if _, err := Build(Options{
+		Dir: dir, Out: out, GOOS: "windows", GOARCH: "amd64", Self: self,
+		Setup: filepath.Join(dir, "GUI-Setup.exe"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ns := names(t, out); !has(ns, "GUI-Setup.exe") {
+		t.Errorf("Windows 包里没有 GUI-Setup.exe：%v", ns)
+	}
+}
+
+// TestBuildSetupMustAgreeWithManifest 守住清单与命令行的那组一致性检查。
+//
+// 每一条都对应一种真实的坏包：清单说有、包里没有（用户双击 .app 打不开）；
+// 命令行给了、清单没说（GUI-Setup 自己按清单找不到自己是谁）；名字对不上
+// （清单在撒谎）；bundle/exe 形态反了（把 .app 声明成 exe）。
+func TestBuildSetupMustAgreeWithManifest(t *testing.T) {
+	fakeSelf := func(t *testing.T) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "gpm")
+		writeFile(t, p, 0o755, "FAKE-GPM")
+		return p
+	}
+
+	t.Run("清单声明了却没给 --setup", func(t *testing.T) {
+		dir := setupAssembly(t)
+		out := filepath.Join(t.TempDir(), "out.zip")
+		_, err := Build(Options{Dir: dir, Out: out, GOOS: "darwin", Self: fakeSelf(t)})
+		if err == nil {
+			t.Fatal("清单声明了 setup 却打包成功了 —— 发出去的包里没有 GUI-Setup")
+		}
+		if !strings.Contains(err.Error(), "--setup") {
+			t.Errorf("报错得告诉打包方怎么办：%v", err)
+		}
+		if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+			t.Errorf("失败后留下了 %s", out)
+		}
+	})
+
+	t.Run("给了 --setup 但清单没声明", func(t *testing.T) {
+		dir := assembly(t) // 这份清单没有 setup 段
+		out := filepath.Join(t.TempDir(), "out.zip")
+		_, err := Build(Options{
+			Dir: dir, Out: out, GOOS: "darwin", Self: fakeSelf(t),
+			Setup: filepath.Join(dir, "GUI-Setup.app"),
+		})
+		if err == nil {
+			t.Fatal("清单没声明 setup 却打包成功了")
+		}
+		if !strings.Contains(err.Error(), "setup") {
+			t.Errorf("报错得点出是清单里没声明：%v", err)
+		}
+	})
+
+	t.Run("名字对不上", func(t *testing.T) {
+		dir := setupAssembly(t)
+		other := filepath.Join(t.TempDir(), "Other.app")
+		if err := os.MkdirAll(other, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "out.zip")
+		_, err := Build(Options{
+			Dir: dir, Out: out, GOOS: "darwin", Self: fakeSelf(t), Setup: other,
+		})
+		if err == nil {
+			t.Fatal("清单写 GUI-Setup.app、给的是 Other.app，却打包成功了")
+		}
+		if !strings.Contains(err.Error(), "GUI-Setup.app") {
+			t.Errorf("报错得说清清单里那个名字：%v", err)
+		}
+	})
+
+	t.Run("形态反了：bundle 给了文件", func(t *testing.T) {
+		dir := setupAssembly(t)
+		file := filepath.Join(t.TempDir(), "GUI-Setup.app")
+		writeFile(t, file, 0o755, "not a bundle")
+		out := filepath.Join(t.TempDir(), "out.zip")
+		if _, err := Build(Options{
+			Dir: dir, Out: out, GOOS: "darwin", Self: fakeSelf(t), Setup: file,
+		}); err == nil {
+			t.Fatal("bundle 声明配一个普通文件，却打包成功了")
+		}
+	})
+
+	t.Run("形态反了：exe 给了目录", func(t *testing.T) {
+		dir := setupAssembly(t)
+		if _, err := Build(Options{
+			Dir: dir, Out: filepath.Join(t.TempDir(), "out.zip"), GOOS: "windows", Self: fakeSelf(t),
+			Setup: filepath.Join(dir, "GUI-Setup.app"),
+		}); err == nil {
+			t.Fatal("exe 声明配一个目录，却打包成功了")
+		}
+	})
+
+	t.Run("清单的 setup 没有这个平台", func(t *testing.T) {
+		dir := setupAssembly(t)
+		writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
+name: AI Desk
+version: 1.2.3
+entry:
+  darwin:
+    bundle: "AI Desk.app"
+  linux:
+    exe: ai-desk
+setup:
+  darwin:
+    bundle: GUI-Setup.app
+launch:
+  cmd: ad
+`)
+		if _, err := Build(Options{
+			Dir: dir, Out: filepath.Join(t.TempDir(), "out.zip"), GOOS: "linux", Self: fakeSelf(t),
+		}); err == nil {
+			t.Fatal("清单的 setup 里没有 linux，却给 linux 打包成功了")
+		}
+	})
+
+	t.Run("setup 路径不能越出包根", func(t *testing.T) {
+		dir := setupAssembly(t)
+		writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
+name: AI Desk
+version: 1.2.3
+entry:
+  darwin:
+    bundle: "AI Desk.app"
+setup:
+  darwin:
+    bundle: ../../GUI-Setup.app
+launch:
+  cmd: ad
+`)
+		if _, err := Build(Options{
+			Dir: dir, Out: filepath.Join(t.TempDir(), "out.zip"), GOOS: "darwin", Self: fakeSelf(t),
+		}); err == nil {
+			t.Fatal("setup 路径越出了包根，却打包成功了")
+		}
+	})
+}
+
+// TestBuildSetupFixesOnlyTheMainExecutable：.app 里 0644 的文件不止主程序一个，
+// 补 x 位不能一把抓 —— 只认 Info.plist 里 CFBundleExecutable 点名的那个。
+//
+// 这里刻意让 bundle 名（Setup Tool.app）与主程序名（gui-setup）不一致：
+// 按目录名去猜会猜错，只有真读 plist 才对得上。
+func TestBuildSetupFixesOnlyTheMainExecutable(t *testing.T) {
+	dir := assembly(t)
+	writeFile(t, filepath.Join(dir, "ad-manifest.yaml"), 0o644, `id: ai-desk
+name: AI Desk
+version: 1.2.3
+entry:
+  darwin:
+    bundle: "AI Desk.app"
+setup:
+  darwin:
+    bundle: "Setup Tool.app"
+launch:
+  cmd: ad
+`)
+
+	bundle := filepath.Join(dir, "Setup Tool.app")
+	writeFile(t, filepath.Join(bundle, "Contents", "Info.plist"), 0o644, `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>gui-setup</string>
+</dict>
+</plist>
+`)
+	writeFile(t, filepath.Join(bundle, "Contents", "MacOS", "gui-setup"), 0o644, "#!/bin/sh\n")
+	writeFile(t, filepath.Join(bundle, "Contents", "Resources", "helper"), 0o644, "resource\n")
+
+	out := filepath.Join(t.TempDir(), "out.zip")
+	self := filepath.Join(t.TempDir(), "gpm")
+	writeFile(t, self, 0o755, "FAKE-GPM")
+	if _, err := Build(Options{
+		Dir: dir, Out: out, GOOS: "darwin", Self: self, Setup: bundle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "unpacked")
+	if err := stage.Materialize(out, dst); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		rel    string
+		wantX  bool
+		reason string
+	}{
+		{filepath.Join("Setup Tool.app", "Contents", "MacOS", "gui-setup"), true, "plist 点名的就是它"},
+		{filepath.Join("Setup Tool.app", "Contents", "Resources", "helper"), false, "资源文件"},
+		{filepath.Join("Setup Tool.app", "Contents", "Info.plist"), false, "清单"},
+	} {
+		fi, err := os.Stat(filepath.Join(dst, tc.rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotX := fi.Mode().Perm()&0o111 != 0; gotX != tc.wantX {
+			t.Errorf("%s（%s）的 x 位：得到 %v，想要 %v", tc.rel, tc.reason, fi.Mode(), tc.wantX)
+		}
+	}
+}
