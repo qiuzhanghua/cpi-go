@@ -1,4 +1,4 @@
-# gpm 包格式与安装布局（契约 · 已冻结 · v3.13）
+# gpm 包格式与安装布局（契约 · 已冻结 · v3.14）
 
 本文只记录**已经拍板**的接口。它是 `AI Desk` 的 CI 与 `gpm` 之间唯一的契约，
 两个仓库各自独立演进时以本文为准。
@@ -7,7 +7,7 @@
 
 | # | 问题 | 裁决 |
 |---|---|---|
-| 1 | gpm 的家目录（安装根）怎么定 | `--dir` > **按清单里 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> **平台数据目录 + 简称**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/cot`）。**v3.5 起没有 `GPM_HOME`**：这个家同时是 cot / tdp 自己的家，gpm 的内部结构（`bin/`、`lib/`、账本、`staging/`）与工具链的东西住在同一个目录里。**v3.7 起账本按家命名**：`<家>/<家目录名>-state.json`（`~/cot/cot-state.json`），v3.6 及以前的 `state.json` 仍可读、写回时迁移（[`DESIGN.md`](DESIGN.md) D36）。**v3.8 起工具链已经装好就跳过**：`<家>/bin/cot`（`tdp` 同理）已经是文件时不再跑包里自带的那一份，`--force` 才重铺；跳过自举不影响 PATH 集成（[`DESIGN.md`](DESIGN.md) D37）。**v3.6 起 GUI 应用的入口也直接住在这个家的顶层**——`<家>/AI Desk.app`、`<家>/ai-desk.exe`——`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（见第 5 节）。 |
+| 1 | gpm 的家目录（安装根）怎么定 | `--dir` > **按清单里 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`<家目录>/bin/gpm` 自证家目录，见第 5 节）> **平台数据目录 + 简称**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> 当前目录。打包方用 **`gpm pack --default-dir`** 把默认值烘进 `install.sh` / `install.cmd`（AI Desk 烘的是 `~/cot`）。**装完之后**（`list` / `where` / `uninstall` / `env`）走的是**另一条链**（`home.Resolve`）：`--dir` > **从 gpm 自己的位置推断** > `$COT_HOME` > `$TDP_HOME` > 当前目录——「自己住哪个家」比环境变量更具体（用户敲的是 `<某个家>/bin/gpm`），而且这一档**不看平台数据目录**：那是安装那一次"没有工具链可依附"时的落脚点（[`DESIGN.md`](DESIGN.md) D21、§2.3）。**v3.5 起没有 `GPM_HOME`**：这个家同时是 cot / tdp 自己的家，gpm 的内部结构（`bin/`、`lib/`、账本、`staging/`）与工具链的东西住在同一个目录里。**v3.7 起账本按家命名**：`<家>/<家目录名>-state.json`（`~/cot/cot-state.json`），v3.6 及以前的 `state.json` 仍可读、写回时迁移（[`DESIGN.md`](DESIGN.md) D36）。**v3.8 起工具链已经装好就跳过**：`<家>/bin/cot`（`tdp` 同理）已经是文件时不再跑包里自带的那一份，`--force` 才重铺；跳过自举不影响 PATH 集成（[`DESIGN.md`](DESIGN.md) D37）。**v3.6 起 GUI 应用的入口也直接住在这个家的顶层**——`<家>/AI Desk.app`、`<家>/ai-desk.exe`——`lib/<id>_<版本>_<平台>/` 那套命名留给命令行插件（见第 5 节）。 |
 | 2 | gpm 怎么到用户手上 | **分发包自带 gpm**：zip 里同时放 gpm 二进制与几行 bootstrap 脚本，用户解压后跑脚本即可，不需要预装任何东西。清单声明 `requires` 时还要带上 `tools/<os>_<arch>/` 里那家工具链（第 2、7 节）。 |
 | 3 | gpm 的范围 | **GUI 应用的安装器 + 离线搬运 zip 自带的工具链**：只收录带图形界面的程序；一个 zip 装一个应用，**账本本身支持多包**。清单声明 `requires: [cot]` 时，install.sh 先跑 zip 里的 cot（第 7 节）；工具链的资产**不进账本、卸载不碰**（第 6 节）；**已经装好就不重铺**——`<家>/bin/cot` 在就跳过自举、`--force` 才照包里那份重铺（第 7 节、[`DESIGN.md`](DESIGN.md) D37）。不做纯 CLI 工具的抓取与安装、不做镜像表/版本源、**没有一行网络代码**——不抓取、不升级，对标 `dpkg` 而不是 `apt`（见 [`DESIGN.md`](DESIGN.md) §0.5、D32/D34）。 |
 
@@ -256,10 +256,15 @@ gpm env [--dir PATH]          # 打印 export PATH=... （PATH 集成被拒时�
 gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH] [--setup PATH]
 ```
 
-家的解析优先级：`--dir` > **按 `requires` 取的家**（`$COT_HOME` / `$TDP_HOME`）> 从 gpm 自己的位置推断
-（二进制正好在 `<家目录>/bin/gpm`、且上一级有账本（`<家目录名>-state.json`，旧名 `state.json` 也认）时，家目录就是上一级）>
-**平台数据目录/<简称>**（`requires` 为空时：macOS `~/Library/Application Support`、
-Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前目录。
+家的解析优先级有**两条链**（第 1 节）：
+
+* **安装那一次**（`gpm install`）：`--dir` > **按 `requires` 取的家**（`$COT_HOME` / `$TDP_HOME`）
+  > 从 gpm 自己的位置推断（二进制正好在 `<家目录>/bin/gpm`、且上一级有账本
+  （`<家目录名>-state.json`，旧名 `state.json` 也认）时，家目录就是上一级）>
+  **平台数据目录/<简称>**（`requires` 为空时：macOS `~/Library/Application Support`、
+  Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前目录。
+* **装完之后**（`list` / `where` / `uninstall` / `env`）：`--dir` > 从 gpm 自己的位置推断
+  > `$COT_HOME` / `$TDP_HOME` > 当前目录（不看平台数据目录）。
 
 `--force` 绕过的只有三道闸：**"那个应用正在运行"**（第 5 节末）、**"这个命令名已经被别人占着"**
 （第 3 节）与**"家里已经有别人的同名入口"**（第 3 节）。它不是忽略一切错误的万能开关——
@@ -276,4 +281,4 @@ Windows `%LOCALAPPDATA%`、Linux `${XDG_DATA_HOME:-~/.local/share}`）> 当前�
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.13：随包的图形安装器走清单 `setup:` 段、由 `gpm pack --setup` 放 zip 顶层（D43、FR-32）+ 入口脚本把用户的参数原样转交（D42、FR-31）+ 安装器自己擦掉下载标记（D40）+ 收掉空的 `staging/`（D40）+ gpm 自身也能升级（D41）+ 卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.14：随包的图形安装器走清单 `setup:` 段、由 `gpm pack --setup` 放 zip 顶层（D43、FR-32）+ 入口脚本把用户的参数原样转交（D42、FR-31）+ 安装器自己擦掉下载标记（D40）+ 收掉空的 `staging/`（D40）+ gpm 自身也能升级（D41）+ 卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿；**v3.14 补三处"契约说了、代码没做/没写"**：fish 也写 `~/.profile`、`$SHELL` 没设时按平台默认、以及把家目录的两条链（安装 `ResolveInstall` / 装完之后 `Resolve`）写进第 1、8 节）。

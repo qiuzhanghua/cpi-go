@@ -2,13 +2,26 @@
 //
 // 家目录不由 gpm 自己发明：包里的 install.sh/install.cmd 用 --dir 把它传
 // 过来（那个值由 `gpm pack --default-dir` 或清单里的 `requires` 决定）。
-// 一个都没给时，gpm 按"证据有多具体"往下找：
+// 一个都没给时，gpm 按"证据有多具体"往下找 —— 这里有两件事、两条链：
+//
+// 安装那一次（ResolveInstall，requires 为空时得替它挑个落脚点）：
 //
 //	--dir                    ← 调用方明说
 //	requires 指出的那个家     ← 清单明说（$COT_HOME / $TDP_HOME，缺省 ~/cot、~/tdp）
 //	从 gpm 自己的位置推断     ← 布局明说（见 RootFromSelf）
 //	平台数据目录/<简称>       ← 谁都没说、也没有工具链：装到 ~/.local/share/ad 这种地方
 //	当前目录                 ← 实在没辙
+//
+// 装完之后（Resolve，供 list / where / uninstall / env 用）：
+//
+//	--dir
+//	从 gpm 自己的位置推断     ← 比环境变量更具体：用户敲的是 <某个家>/bin/gpm
+//	$COT_HOME / $TDP_HOME    ← shell 里的提示，很可能是另一个家留下的
+//	当前目录
+//
+// 两条链只差两处：环境变量与"从自己的位置推断"谁优先；有没有平台数据目录
+// 那一档（那是安装那一次"没有工具链可依附"时的落脚点，装完之后从那里猜不出
+// 用户想看哪个家）。
 //
 // v3.5 起没有 `GPM_HOME`：这个家就是工具链自己的家，gpm 的内部结构
 // （bin/、lib/、账本、staging/）与 cot / tdp 的东西住在同一个目录里。

@@ -269,15 +269,28 @@ func usage(w *os.File) {
   gpm env
   gpm version
 
-家目录按这个顺序确定（D21）：
+家目录按这个顺序确定（D21）—— 两条链，因为有两件事要问：
+
+安装那一次（gpm install，home.ResolveInstall）：
   --dir
   > 清单里 requires 第一家的家（$COT_HOME / $TDP_HOME，缺省 ~/cot、~/tdp）
   > 从 gpm 自己的位置推断
   > 平台数据目录/<简称>（macOS ~/Library/Application Support，Windows %%LOCALAPPDATA%%，Linux ~/.local/share）
   > 当前目录
 
+装完之后（gpm list / where / uninstall / env，home.Resolve）：
+  --dir
+  > 从 gpm 自己的位置推断
+  > $COT_HOME / $TDP_HOME
+  > 当前目录
+
+两条链只差两处：装完之后「自己住哪个家」排在环境变量前面 —— 用户敲的是
+<某个家>/bin/gpm，那个位置比 shell 里的变量更具体（变量很可能是另一个家
+留下的）；而平台数据目录那一档只属于安装：那是 requires 为空时的落脚点，
+装完之后不该再从那里猜。
+
 装到哪儿通常由安装器（install.sh / install.cmd）传进来，那个值来自
-gpm pack --default-dir 或清单里的 requires；gpm 自己只认上面这个顺序。
+gpm pack --default-dir 或清单里的 requires；gpm 自己只认上面这两条链。
 清单里没有 requires 时，GUI 应用没有工具链可以借住，就走平台惯例。
 
 「从 gpm 自己的位置推断」是给装完之后用的：带 GUI 的应用住在家的顶层

@@ -7,7 +7,7 @@
 **没有 `upgrade` 子命令，也没有一行网络代码**（`grep -rn 'net/http\|http.Get\|net/url' --include='*.go' .` 无命中）。
 分发者自己决定什么时候出新版本、用户自己把 zip 拿过来 —— 这是整套设计的前提，不是「以后补上」。
 
-- 当前软件版本 **v0.6.4**，设计契约 **v3.13**（[两套版本号](#两套版本号)）。
+- 当前软件版本 **v0.6.4**，设计契约 **v3.14**（[两套版本号](#两套版本号)）。
 - macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` 里只有几行胶水
   （切到自己的目录、把家解析成一个具体路径、把安装交给 gpm、把用户给的参数原样转交）。
 - **主要用户**是拿到分发包、想双击装上的非开发人员；**次要用户**是要 `--yes` 无人值守的 CI 与内网运维。
@@ -169,7 +169,9 @@ gpm uninstall ai-desk                     # 交互终端上摊开要删的东西
 
 差别是「自己住哪个家」与「环境变量」谁优先：装完之后你敲的是 `<某个家>/bin/gpm list`，
 那个位置是**更具体的证据**（shell 里可能激活着另一个家，人却在看这一个），所以它排在环境变量前面；
-这条链也不看平台数据目录。**契约里写的（D21）是上面那一条** —— 两条链并存是代码现状，这一处待收口。
+这条链也不看平台数据目录——那是安装那一次「没有工具链可依附」时的落脚点。
+两条链都写在契约里（[`docs/PACKAGE-FORMAT.md`](docs/PACKAGE-FORMAT.md) 第 1 节、
+[`docs/DESIGN.md`](docs/DESIGN.md) D21 与 §2.3）。
 
 「从 gpm 自己的位置推断」的判据：所在目录正好叫 `bin`、文件名正好是 `gpm`、
 且上一级有账本（`<家目录名>-state.json`，旧名 `state.json` 也认）——
@@ -194,8 +196,10 @@ gpm uninstall ai-desk                     # 交互终端上摊开要删的东西
 几个细节是踩出来的：
 
 * **macOS 上 zsh 不读 `~/.profile`**，所以落点按 `$SHELL` 算：zsh 写 `~/.zprofile` + `~/.zshrc`，
-  bash 在 macOS 上写 `~/.bash_profile`（Linux 上是 `~/.bashrc`），fish 写 `~/.config/fish/config.fish`。
-  除 fish 外都再写一份 `~/.profile` 兜底（fish 只写它自己那一份，写完就返回）。
+  bash 在 macOS 上写 `~/.bash_profile`（Linux 上是 `~/.bashrc`），fish 写 `~/.config/fish/config.fish`；
+  **不论 `$SHELL` 都再写一份 `~/.profile` 兜底**（fish 也一样——它自己那份是给 fish 用的，
+  将来换成 bash/sh、或者跑 `sh -l` 时，`~/.profile` 才是 PATH 的来源）。`$SHELL` 没设时
+  按平台默认（macOS 是 zsh，其余是 bash）。
   标记块本身是幂等守卫，重复写不会把 PATH 撑大。
 * **Windows 上读出什么类型就写回什么类型**（`REG_SZ` / `REG_EXPAND_SZ`）：用
   `[Environment]::SetEnvironmentVariable(..., "User")` 会把 `REG_EXPAND_SZ` 压成 `REG_SZ`，
@@ -291,9 +295,9 @@ ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了�
 这个仓库里同时有两个「版本」，在 commit message 和别人的 README 里都会出现：
 
 * **软件版本 `v0.6.4`** —— git tag、release 资产名、`gpm version` 打印的那个。
-* **设计契约 `v3.13`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
+* **设计契约 `v3.14`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
   `FR-*` / `A*` 的完整清单在 `docs/REQUIREMENTS.md`）与 `docs/PACKAGE-FORMAT.md` 顶部那句
-  「契约 · 已冻结 · v3.13」。契约号变大表示**接口/行为**改了，软件版本按需发布。
+  「契约 · 已冻结 · v3.14」。契约号变大表示**接口/行为**改了，软件版本按需发布。
 
 看到「gpm v3.11 起」说的是行为契约，看到「gpm 0.6.4」说的是那个二进制。
 

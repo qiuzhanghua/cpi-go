@@ -1,4 +1,4 @@
-# gpm — GUI Package Manager 设计文档（v3.13）
+# gpm — GUI Package Manager 设计文档（v3.14）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -12,6 +12,8 @@ v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**一次装
 **v3.11 让 gpm 自己也能升级。** D29 当初定的规矩是"`<家>/bin/gpm` 已经有一份就不覆盖"，为的是防住"装个旧包把新版 gpm 静默降级"；代价记在 O7 里 —— gpm 自己永远升不上去，只能手工换那个文件。这一版把"不覆盖"换成"比一次版本"：装完应用之后问一次家里那份的版本（跑 `<家>/bin/gpm --version`），只有**严格更新**才拿当前进程换掉它，同版本、更旧、或问不出来一律原样留着（`--force` 是"读不出来但就是要换"的口子）。版本是**问出来的**、不是从账本里读的：账本记的是我们上次放的那一份，用户随手把那个文件换掉之后账本就不作数了，而比错的方向恰好是最坏的一种 —— 拿新的盖掉更新的。`--version` 其实从 v0.5.0 起就有（打的是 `gpm 0.6.1` 这一行，按用户裁决保持原样），这一版第一次真正拿它来做事。按用户的裁决，换的时候**不看那个文件是谁放的**；外来的覆盖风险与降低手段记在 R19，O7 就此关闭。见 §0.3.11、D41、FR-9/FR-30。
 
 **v3.13 让分发包里能坐一个"图形安装器"。** v3.12 把参数通道打通，就是为了这一版：包现在可以在清单的 **`setup:`** 段声明随包的 GUI-Setup（macOS 一个 `.app`、Windows / Linux 一个可执行文件）。`gpm pack --setup <路径>` 把它放在 zip 的**顶层**——与 `install.sh` / `gpm` 并排，**不进 `payload/`**：`payload/` 是"要装进家里的东西"，而 GUI-Setup 是**安装过程本身**，装完它就该留在解压目录里陪用户，不该跟着账本落进家（"`payload/` 根下只许一个条目"这条铁律也因此不必破）。两个相对根必须分清：清单里 `entry:` 相对 `payload/`，`setup:` 相对**包根**。它**不进 `SHA256SUMS`**——`install.sh`、`gpm`、清单也都不进，它们是同一种东西：包根上的"信任起点"，校验它们得先有一个可信的校验器。顺带修掉一个只在 `.app` 上暴露的坑：`payload/` 之外的东西以前从没经过权限位修整，而 `.app` 内层二进制是 `0644` 时双击没反应、报错还看不出所以然，所以打包时按 `Contents/Info.plist` 的 `CFBundleExecutable` 点名的那个文件补 x 位（**只补它一个**，不是整棵树）。见 §0.3.13、D43、FR-32。
+
+**v3.14 让两处"文档说的"与"代码做的"对齐。** 一是 PATH 落点：契约一直写着"不论 `$SHELL` 都再写一份 `~/.profile` 兜底"，而 `ShellProfiles` 的 fish 分支**提前 return** 了——用 fish 的人把 shell 换成 bash/sh、或者跑 `sh -l`，PATH 就没了；修的时候顺带发现同一函数里第二处同类漏洞：`$SHELL` 没设时那句 `filepath.Base(os.Getenv("SHELL"))` 得到的是 `.` 而不是空串，于是"没设就按平台默认（macOS 是 zsh）"这半句从不生效，只写了 zsh 根本不读的 `~/.profile`。二是家目录：`home.ResolveInstall`（安装那一次）与 `home.Resolve`（装完之后）本来就是**两条链**，而契约与 `gpm help` 只写了前一条，现在 D21 与 `usage` 把两条都写清（顺序未变，只是补齐）。见 §0.3.14。
 
 **v3.12 让入口脚本把用户的参数原样转交。** 生成的 `install.sh` 一直是 `exec ./gpm install . --dir "…"`——**末尾没有 `"$@"`**，于是 `./install.sh --yes`、`./install.sh --dir ~/tdp` 这类参数被 shell 悄悄吃掉：用户以为自己在传参数，gpm 那边什么都没收到（非交互环境里表现为 PATH 集成被静默跳过，交互环境里表现为又弹一次询问）。这一版把 `"$@"`（POSIX）与 `%*`（cmd）拼在烘进去的 `--dir` **之后**——位置很关键：Go 的 flag 是后者覆盖前者，所以顺序决定了「用户传的 `--dir` 赢过烘进去的默认值」。引号也不能省：不带引号的 `$@` 会被再拆一次词，带空格的家目录会裂成两个参数。见 §0.3.12、D42、FR-31。
 
@@ -43,7 +45,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 |---|---|---|
 | **D19** | **范围 = GUI 应用的安装器 + 工具链自举的编排**。一次安装一个 `id`，但**账本是多包的**：同一个家里可以并排装好几个应用，各占自己的家目录顶层入口（v3.6：`<家>/<payload 顶层名>`）与 `bin/<cmd>`（见 A3、D35）。不做多应用清单、不做计划算法、不做镜像表/版本源/断点续传/离线 store，**也不抓取、不升级**（那是 `apt` 的活，见 §0.5）。**图形安装器暂缓**（原 D13 的 Wails 四屏不在首版范围）。 | 本项目 + v3.6 |
 | **D20** | **分发形态 = zip 自带 gpm**。产物是一个 `<id>-<version>-<os>-<arch>.zip`，内含 `install.sh`（mac/Linux）/ `install.cmd`（Windows）+ `gpm` + `<简称>-manifest.yaml` + `payload/` + `SHA256SUMS`；声明了 `requires` 时还有 `tools/<os>_<arch>/{cot,tdp}`（D32）。用户解压后运行其中一个，脚本只做三行 bootstrap。 | 本项目（v3.5 改清单名） |
-| **D21** | **安装根由安装器决定**：优先级 `--dir` > **按 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`RootFromSelf()`，v3.4）> **平台数据目录/<简称>**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> **当前目录**。打包方用 `gpm pack --default-dir "~/cot"` 把默认值烘进 `install.sh`/`install.cmd`。**v3.5 起没有 `GPM_HOME`**：家就是工具链自己的家；**v3.6 起 GUI 应用落在家的顶层**（`<家>/<Name>.app`、`<家>/<exe>`，不再进 `lib/`），`bin/` 里住 cot / tdp / gpm / 各个 `<简称>`，`lib/` 留给命令行插件的命名——一个家、一条 PATH。 | 本项目；v3.5 改根、v3.6 改入口落点（§0.3.5、§0.3.6） |
+| **D21** | **安装根由安装器决定**：优先级 `--dir` > **按 `requires` 取的那个家**（`${COT_HOME:-$HOME/cot}` / `${TDP_HOME:-$HOME/tdp}`）> **从 gpm 自己的位置推断**（`RootFromSelf()`，v3.4）> **平台数据目录/<简称>**（`requires` 为空、又没有别的东西可依附时的落脚点：macOS `~/Library/Application Support/<简称>`、Windows `%LOCALAPPDATA%\<简称>`、Linux `${XDG_DATA_HOME:-~/.local/share}/<简称>`）> **当前目录**。打包方用 `gpm pack --default-dir "~/cot"` 把默认值烘进 `install.sh`/`install.cmd`。**v3.5 起没有 `GPM_HOME`**：家就是工具链自己的家；**v3.6 起 GUI 应用落在家的顶层**（`<家>/<Name>.app`、`<家>/<exe>`，不再进 `lib/`），`bin/` 里住 cot / tdp / gpm / 各个 `<简称>`，`lib/` 留给命令行插件的命名——一个家、一条 PATH。**装完之后（`list` / `where` / `uninstall` / `env`）走另一条链**（`home.Resolve`）：`--dir` > **从自己的位置推断** > `$COT_HOME` > `$TDP_HOME` > 当前目录，不看平台数据目录——「自己住哪个家」比 shell 里的变量更具体，而平台数据目录那一档只属于"第一次装、没有工具链可依附"（v3.4 起，见 §2.3）。 | 本项目；v3.5 改根、v3.6 改入口落点（§0.3.5、§0.3.6） |
 | **D22** | **输入契约**：一个目录或一个 zip，里面有 `<简称>-manifest.yaml` + `payload/` + `SHA256SUMS`（`requires` 非空时还有 `tools/<os>_<arch>/`）。清单文件名由简称决定；给一个目录时 `gpm install` 认唯一的 `*-manifest.yaml`，多于一个就报错。 | 本项目；v3.5 改文件名并加 `requires` |
 | **D23** | **校验**：`SHA256SUMS` 必须覆盖 `payload/` 下每一个常规文件；对不上即拒绝安装。**缺失 `SHA256SUMS` 时警告后继续**，并把本次安装记为 `unverified`（`gpm list` 会显示）。`--skip-verify` 只用于调试。 | 沿用 A2 |
 | **D24** | **macOS 应用必须以 `.app` 形态落地**：上游给了就用（`entry.darwin.bundle`）；上游只发裸可执行文件时由 gpm 合成最小外壳。**v3.6 起这个 `.app` 直接落在家目录顶层**（`<家>/<Name>.app`），不再套 `lib/<id>_<版本>_<平台>/`（D35）。 | 沿用 D18。**合成外壳这一半本版尚未实现**，见 §2.7、§2.13 |
@@ -215,6 +217,15 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | GUI-Setup **不进 `SHA256SUMS`** | 与 `install.sh` / `gpm` / 清单同类：包根上的"信任起点"。校验它们得先有一个可信的校验器，而这个校验器只能来自包外——用户确认"这是我自己下载的那个包"（R1） |
 | 非 Windows 的 bundle 补一次 x 位，**只补主可执行文件** | `.app` 从网盘、邮件、Windows 资源管理器过一遍就可能丢掉内层二进制的 x 位，双击没反应、报错还看不出所以然。名字信 `Contents/Info.plist` 的 `CFBundleExecutable`，读不出来才退到 `Contents/MacOS/<bundle 名去掉 .app>`；给整棵树上 x 位会连 `Info.plist` 一起标成可执行，那是另一种坏包 |
 
+### 0.3.14 v3.13 → v3.14 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| `ShellProfiles` 的 fish 分支不再提前 return：fish 也拿到 `~/.config/fish/config.fish` **与** `~/.profile` 两份 | 契约（§2.6 与 `PACKAGE-FORMAT.md` 第 6 节）从写下那天起就说"不论 `$SHELL` 都再写一份 `~/.profile` 兜底"，代码却在这一支提前返回。后果不是理论上的：fish 用户 `chsh` 到 bash、或者在脚本里跑 `sh -l` 时，PATH 里没有 `<家>/bin`。这一版让代码跟上契约（用户裁决：**改代码**，不是改契约） |
+| `$SHELL` 没设（或不是个路径）时真的落到平台默认 | `filepath.Base("")` 是 `.` 而不是空串，所以 `if shell == ""` 从来不为真：macOS 上没有 `$SHELL` 的环境（GUI 拉起的安装、`env -i` 之类）只写了一份 `~/.profile`，而 zsh **不读**它——正是 §2.6 那条"为什么不能只写 `~/.profile`"要防的症状。现在先 trim 再判，空、`.`、`/` 都按平台默认走（macOS → zsh，其余 → bash） |
+| D21 与 `gpm help` 都写明**两条链**：安装那次 `ResolveInstall`（`--dir` > requires 的家 > 从自己的位置推断 > 平台数据目录/<简称> > 当前目录）、装完之后 `Resolve`（`--dir` > 从自己的位置推断 > `$COT_HOME` > `$TDP_HOME` > 当前目录） | 代码从 v3.4 起就是两条链，文档只写了前一条，`gpm help` 把 `Resolve` 那条链的两处差异（"自己住哪个家"排在环境变量前面；不看平台数据目录）藏了起来。这是**补齐**不是改判——顺序一个字没动（用户裁决：**改文档**，不是改代码） |
+| 两条新用例：落点表（zsh / bash 两个平台 / fish 两个平台 / 空 `$SHELL` 两个平台都必须含 `~/.profile`）与"Windows 不碰 shell 配置" | 上面两处都是"契约写了、代码没做"的漏，靠读代码看不出来；表驱动的落点用例连同空 `$SHELL` 那两行把两处一起钉住 |
+
 ### 0.4 待确认假设
 
 | # | 假设 | 影响 |
@@ -372,7 +383,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 
 那个 `…` 就是 `gpm pack --default-dir` 烘进来的家（AI Desk 从 v3.5 起烘的是 `~` 展开后的 `$HOME/cot`）；打包方没指定时它就是 `.`，也就是"解压出来那个目录"。**gpm 只在"没有工具链的家可依附"时才自己挑一个落脚点**——它认 `--dir` > 按 `requires` 取的那个家（`$COT_HOME` / `$TDP_HOME`）> 从自己的位置推断 > 平台数据目录/<简称> > 当前目录这个顺序（§2.3）。
 
-**装完之后还有一档**：`install.sh` 只在装的那一次把 `--dir` 传进来，之后用户在新终端里敲 `gpm list` 时 `$COT_HOME` 并不在环境里（除非他先 source 过 activate）。于是 gpm 看一眼**自己现在在哪儿**——`<家>/bin/gpm` 这个位置本身就说明了家目录在哪（`home.RootFromSelf()`，§2.3）。
+**装完之后走的是另一条链**（`home.Resolve`）：`install.sh` 只在装的那一次把 `--dir` 传进来，之后用户在新终端里敲 `gpm list` 时 `$COT_HOME` 并不在环境里（除非他先 source 过 activate）。于是 gpm 看一眼**自己现在在哪儿**——`<家>/bin/gpm` 这个位置本身就说明了家目录在哪（`home.RootFromSelf()`）——并把它排在环境变量**前面**：`--dir` > `RootFromSelf()` > `$COT_HOME` > `$TDP_HOME` > 当前目录。这条链**不看平台数据目录**：那是上一段里"没有工具链可依附"时的落脚点；装完之后 `gpm list` 已经在某个家里跑着了，再从平台数据目录猜一个只会看错地方。两条链的差别只有这两处（环境变量与前一条谁优先、有没有平台数据目录那一档），其余顺序一致。
 
 一条铁律：**`internal/` 不知道 GUI 存在**。将来加图形壳（若加）时，它和 `cmd/gpm` 走同一条 `install.Install`。
 
@@ -382,7 +393,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 
 ```
 cmd/gpm/            CLI 入口：参数解析、子命令分发、中文输出
-internal/home/      家的解析（--dir > 按 requires 取的家 > 从自己的位置推断 > 平台数据目录/<简称> > 当前目录）与各子目录
+internal/home/      家的解析（安装那次 `ResolveInstall`：--dir > 按 requires 取的家 > 从自己的位置推断 > 平台数据目录/<简称> > 当前目录；装完之后 `Resolve`：--dir > 从自己的位置推断 > $COT_HOME > $TDP_HOME > 当前目录）与各子目录
 internal/manifest/  <简称>-manifest.yaml 的解析与平台校验（含 requires）
 internal/stage/     解包（目录或 zip）与 sha256 校验
 internal/pack/      反向：把装配目录打成可分发的 zip（install.sh/install.cmd/gpm/清单/SHA256SUMS/tools/）
@@ -994,7 +1005,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 校验 | 改动一个字节 → 拒绝；删掉 `SHA256SUMS` → 警告 + `unverified`；`--skip-verify` → 放行；**带空格的路径**（`AI Desk.app/…`）要能正确切出文件名 | `internal/stage` |
 | 打包 | 打出来的 zip 能原样解回来（含符号链接与 `0755`）；`SHA256SUMS` 覆盖到每个常规文件且不含链接；缺目标平台入口时拒绝；失败不留半个 zip | `internal/pack` |
 | 启动器语义 | 断言**没有 `requires` 时** `activate` 生成 `open … --args`、**有 `requires` 或 `direct` 时**直接 exec 内层可执行文件；注入的环境块过 `sh -n`；参数逐个透传；生成的文件真的可执行 | `internal/integrate` |
-| PATH 块 | **把生成的块真喂给 `zsh -n` / `bash -n` / `sh -n`**；"必须是 `$HOME` 相对形式"；连 source 三次只有一个块且在首位；fish 用 `contains` | `internal/integrate` |
+| PATH 块 | **把生成的块真喂给 `zsh -n` / `bash -n` / `sh -n`**；"必须是 `$HOME` 相对形式"；连 source 三次只有一个块且在首位；fish 用 `contains`；**落点表**：zsh / bash（macOS 与 Linux）/ fish / 空 `$SHELL` 都必须含 `~/.profile`，Windows 上不写 shell 配置 | `internal/integrate` |
 | Windows PATH | 纯函数表驱动（展开 `%VAR%`、判重、只摘自己那一条）+ **往返逐字节保真**；真注册表往返由 CI 的 windows job 跑 | `internal/integrate` |
 | Windows `.lnk` | 写进去再读回来，比对 Target/Arguments/WorkingDir/Description；已有同名不覆盖 | `internal/integrate`（windows） |
 | Linux `.desktop` | 字段齐全、`Exec=` 指向启动器、遵守 `$XDG_DATA_HOME`；有 `desktop-file-validate` 就过一遍 | `internal/integrate`（linux） |
@@ -1003,7 +1014,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | 拦截语义 | 隔离 `HOME` 后真装一次、真把假应用跑起来，再装第二次 → 必须拒绝且**账本与包目录一个字没动**；`--force` → 放行且有警告；卸载同理；应用不在跑时不许误拦 | `internal/install` |
 | 下载标记（v3.10、D40） | 给夹具打上**真的** `com.apple.quarantine` 再清，断言**顶层与内层文件**都没了；干净树上跑一遍必须安静（不多出一行提示）；非 macOS 上钉住"空转且不报错"。**变异检验过**：把 `StripQuarantine` 改成空函数，第一条用例立刻变红（断言消息里带着还残留的标记值） | `internal/integrate`（darwin / 非 darwin 各一份） |
 | gpm 自身升级（v3.11、D41） | 版本解析与 semver 优先级表驱动（`gpm ` 前缀、`v` 前缀、`-dev`、`git describe` 的 `-2-gSHA`、`+构建`、以及不该认的 `0.6.x` / `0.6.1.2` / `1.0.0-`）；`installSelf` 每条出口一条用例（新装 / 换旧的 / 留新的 / 留同版本 / 自己版本未知 / `--force` 覆盖读不出来的）；**真去 exec 一次**的用例在 Unix 上（shell 脚本扮演旧 gpm，另含"跑不起来""输出认不出""退出码非 0"三种）；安装级两条（换掉的进账本、更新的不进账本）+ 一条"全新安装不许冒出覆盖字样"（这条是真机 e2e 抓出来的回归） | `internal/install`（`version_test.go`、`self_test.go`、`selfver_unix_test.go`） |
-| 安装根与 `--default-dir` | `home.Resolve` / `home.ResolveInstall` 的五档优先级（`--dir` > **按 `requires` 取的家** > **从自己的位置推断** > **平台数据目录/<简称>** > 当前目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有账本 / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`，没给 `--default-dir` 时脚本干脆**不传 `--dir`**（交给 gpm 按上面那条链自己定）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
+| 安装根与 `--default-dir` | **两条链**：安装那次 `home.ResolveInstall` 的五档优先级（`--dir` > **按 `requires` 取的家** > **从自己的位置推断** > **平台数据目录/<简称>** > 当前目录），装完之后 `home.Resolve` 的五档（`--dir` > **从自己的位置推断** > `$COT_HOME` > `$TDP_HOME` > 当前目录，不看平台数据目录）；`RootFromSelf()` 的三条判据各自能拦住一种"看着像但不是"的位置（目录不叫 `bin` / 文件不叫 `gpm` / 上一级没有账本 / 连自己在哪都不知道）；生成的脚本里 `~` 展开成 `$HOME` / `%USERPROFILE%`，没给 `--default-dir` 时脚本干脆**不传 `--dir`**（交给 gpm 按上面那条链自己定）；`<bin>/gpm` 已存在时**不覆盖**且不进账本 | `internal/home`、`internal/pack`、`internal/install` |
 | 账本命名与迁移（v3.7） | 账本落在 `<家>/<家目录名>-state.json`；只有旧 `state.json` 时读得到，写回后旧文件消失、新文件就位；两个名字都在时新的说了算、旧的原地不动；坏 JSON 的报错指向真正读到的那份文件 | `internal/ledger`（`ledger_test.go`）；`internal/home` 与 `internal/install` 各有用例守着 `RootFromSelf` 认旧账本、以及"新旧名都算家骨架" |
 | 工具链已装好则跳过（v3.8） | 先手放一个"老的" `<家>/bin/cot`，再用一个会写标记文件的假 cot 装包：假 cot **不该被调用**、老的 cot 原样不动、启动器照建；加 `--force` 才重铺 | `internal/install`（`toolchain_test.go` 的 `TestInstallSkipsToolchainAlreadyInstalled` / `TestInstallForceReinstallsToolchain`） |
 | 回滚只管 GUI（v3.8） | 假 cot 先成功铺好 `bin/cot`，再让后面某一关失败（家里预放别人的同名入口）：整次安装失败，但 `bin/cot` 还在、别人的东西没动、没有启动器、账本仍为空 | `internal/install`（`TestInstallKeepsToolchainWhenGuiPartFails`） |
@@ -1111,6 +1122,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **M16 gpm 自己也能升级（v3.11）** | `Options.SelfVersion`；`installSelf(binDir, selfVersion, force)` 里那次版本比较（严格更新才替换，问不出来就不动，`--force` 兜底）；`internal/install/version.go` 的解析/比较 + `querySelfVersion` 测试缝隙（与 `home.selfExecutable` 同一手法）；三条新用例 + 两条安装级用例 + Unix 上真 exec 的用例；文档同步（§0.3.11、D41、FR-9/FR-30、R19、O7 关闭、D29 修订） | ✅ **已完成**（v3.11）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿，六平台交叉编译预检通过；本机用三个自报版本不同的二进制 e2e（新装静默 / 换旧的 / 留新的 / `--force` 硬降级 / 读不出来时留着），并且这次 e2e 抓出并修掉了一个新装也打"已覆盖"的 bug（§3） |
 | **M17 入口脚本转发参数（v3.12）** | `InstallScript` / `InstallBatch` 末尾拼 `"$@"` / `%*`；位置固定在烘进去的 `--dir` 之后；`pack_test.go` 新增 `TestInstallersForwardArgs`（三种取向 + 变异检验）；文档同步（§0.3.12、D42、FR-31、PACKAGE-FORMAT §7） | ✅ **已完成**（v3.12）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿；本机拿 AI Desk 0.3.1 的正式产物重打包 e2e（带参生效 / 不带参对照 / 幂等 / `--dir` 覆盖 / 卸载回放，§3） |
 | **M18 随包的图形安装器（v3.13）** | 清单 `setup:` 段 + `gpm pack --setup`（zip 顶层、不进 `payload/`、不进 `SHA256SUMS`、只给主可执行文件补 x 位）；四条新用例（顶层落位 / Windows 的 exe / 七种错法 / 只补主程序）；文档同步（§0.3.13、D43、FR-32、PACKAGE-FORMAT 第 2/3/8 节）；gsetup-go 那边接上 `setup:` 段 | ✅ **已完成**（v3.13）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿；本机拿 AI Desk 0.3.1 的正式产物 + 真 GUI-Setup.app 重打包 e2e（缺 `--setup` 报错 / 顶层落位与 x 位 / 干净家安装 / 卸载回放，§3） |
+| **M19 落点与两条链的补齐（v3.14）** | `ShellProfiles` 的 fish 分支改成往前走、拿到 `~/.profile`；`$SHELL` 为空 / `.` / `/` 时按平台默认；两条新用例（落点表 + Windows 不写）；D21、`gpm help`、§2.3、`internal/home` 的包注释与 README 都写明两条家目录链；文档同步（§0.3.14、PACKAGE-FORMAT 第 1/6/8 节） | ✅ **已完成**（v3.14）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿 |
 
 ---
 

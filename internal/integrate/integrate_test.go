@@ -96,6 +96,47 @@ func TestPathBlockIsIdempotentInZsh(t *testing.T) {
 	}
 }
 
+// 落点表：不论 $SHELL 都要有 ~/.profile 兜底 —— fish 也一样。
+//
+// 这里曾经漏过 fish：那个分支提前 return 了，于是契约（DESIGN.md §2.6 与
+// PACKAGE-FORMAT.md 第 6 节都写着"不论 $SHELL 都再写一份 ~/.profile"）
+// 与代码不一致：用户把 shell 换成 bash/sh、或者跑 `sh -l` 时 PATH 就没了。
+func TestShellProfilesAlwaysIncludeDotProfile(t *testing.T) {
+	home := "/tmp/example-home"
+	cases := []struct {
+		shell string
+		goos  string
+		want  []string
+	}{
+		{"zsh", "darwin", []string{".zprofile", ".zshrc", ".profile"}},
+		{"bash", "darwin", []string{".bash_profile", ".profile"}},
+		{"bash", "linux", []string{".bashrc", ".profile"}},
+		{"fish", "darwin", []string{filepath.Join(".config", "fish", "config.fish"), ".profile"}},
+		{"fish", "linux", []string{filepath.Join(".config", "fish", "config.fish"), ".profile"}},
+		{"", "darwin", []string{".zprofile", ".zshrc", ".profile"}}, // 没 $SHELL 时按平台默认
+		{"", "linux", []string{".bashrc", ".profile"}},
+	}
+	for _, c := range cases {
+		t.Setenv("SHELL", c.shell)
+		var want []string
+		for _, w := range c.want {
+			want = append(want, filepath.Join(home, w))
+		}
+		got := ShellProfiles(c.goos, home)
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("SHELL=%q goos=%s：得到 %v，想要 %v", c.shell, c.goos, got, want)
+		}
+	}
+}
+
+// Windows 上 PATH 走注册表，不碰 shell 配置。
+func TestShellProfilesWindowsIsEmpty(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	if got := ShellProfiles("windows", "/tmp/example-home"); len(got) != 0 {
+		t.Fatalf("Windows 上不该写 shell 配置，得到 %v", got)
+	}
+}
+
 // fish 的写法不一样，至少确认它不掺进 POSIX 的 case 语法。
 func TestPathBlockFishForm(t *testing.T) {
 	home := "/tmp/example-home"

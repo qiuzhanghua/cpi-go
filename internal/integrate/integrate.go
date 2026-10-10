@@ -256,13 +256,20 @@ func windowsStartMenuShortcut(name, entryAbs string) (*ledger.Link, string, erro
 // ShellProfiles 按 $SHELL 与平台算出该写哪几个 shell 配置文件。
 //
 // macOS 自 Catalina 起默认 shell 是 zsh，而 zsh 不读 ~/.profile，
-// 所以不能只写 .profile；不论 $SHELL 都再写一份 .profile 兜底。
+// 所以不能只写 .profile；不论 $SHELL 都再写一份 .profile 兜底 ——
+// fish 也一样（它读 ~/.config/fish/config.fish，但换了 shell 或
+// 跑 `sh -l` 时那份 .profile 才是 PATH 的来源，契约见 DESIGN.md §2.6）。
 func ShellProfiles(goos, homeDir string) []string {
 	if goos == "windows" {
 		return nil
 	}
-	shell := filepath.Base(os.Getenv("SHELL"))
-	if shell == "" {
+	// $SHELL 没设时按平台默认（macOS 自 Catalina 起是 zsh）。
+	// 注意 filepath.Base("") 是 "."，所以不能拿 Base 的结果直接当"有没有值"看。
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell != "" {
+		shell = filepath.Base(shell)
+	}
+	if shell == "" || shell == "." || shell == "/" {
 		if goos == "darwin" {
 			shell = "zsh"
 		} else {
@@ -271,10 +278,9 @@ func ShellProfiles(goos, homeDir string) []string {
 	}
 
 	var out []string
-	if shell == "fish" {
-		return []string{filepath.Join(homeDir, ".config", "fish", "config.fish")}
-	}
 	switch shell {
+	case "fish":
+		out = append(out, filepath.Join(homeDir, ".config", "fish", "config.fish"))
 	case "zsh":
 		out = append(out, filepath.Join(homeDir, ".zprofile"))
 		out = append(out, filepath.Join(homeDir, ".zshrc"))
